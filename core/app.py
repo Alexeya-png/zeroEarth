@@ -7,7 +7,10 @@ from core.logging import setup_logging
 from core.middlewares.db import DbSessionMiddleware
 from db.session import create_engine_and_sessionmaker, init_db
 
+from modules.characters.router import router as characters_router
+from modules.range.router import router as range_router
 from modules.start.router import router as start_router
+from modules.fallback.router import router as fallback_router
 
 
 async def run() -> None:
@@ -23,7 +26,10 @@ async def run() -> None:
     await init_db(engine)
 
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
+    dp.include_router(characters_router)
+    dp.include_router(range_router)
     dp.include_router(start_router)
+    dp.include_router(fallback_router)
 
     try:
         await dp.start_polling(

@@ -14,11 +14,7 @@ PREMIUM_START_COINS = 1500
 
 
 def _esc(s: str) -> str:
-    return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _num(x: Any) -> str:
@@ -101,12 +97,15 @@ class StartService:
                 text(
                     """
                     SELECT
-                      id, name, faction, creation_type, is_alive,
-                      endurance, agility, intelligence,
-                      hp, accuracy, stealth
-                    FROM characters
-                    WHERE user_id = :uid
-                    ORDER BY id DESC
+                      c.id, c.name, c.faction, c.creation_type, c.is_alive,
+                      c.endurance, c.agility, c.intelligence,
+                      c.hp AS max_hp,
+                      COALESCE(h.current_hp, c.hp) AS current_hp,
+                      c.accuracy, c.stealth
+                    FROM characters c
+                    LEFT JOIN character_health h ON h.character_id = c.id
+                    WHERE c.user_id = :uid
+                    ORDER BY c.id DESC
                     """
                 ),
                 {"uid": user.id},
@@ -125,11 +124,10 @@ class StartService:
             status = "жив" if r["is_alive"] else "мертв"
             lines.append(
                 f"#{r['id']} – {name} – {r['creation_type']} – {status}\n"
-                f"Здоровье – HP: {r['hp']}  Точность: {r['accuracy']}  Скрытность: {_num(r['stealth'])}\n"
+                f"Здоровье – HP: {r['current_hp']}/{r['max_hp']}  Точность: {r['accuracy']}  Скрытность: {_num(r['stealth'])}\n"
                 f"Выносливость: {r['endurance']}  Ловкость: {r['agility']}  Интеллект: {r['intelligence']}"
             )
             lines.append("")
-
         return "\n".join(lines).rstrip()
 
     async def create_character(self, tg_id: int, creation_type: str, name: str) -> str:
@@ -175,7 +173,7 @@ class StartService:
                       :reaction, :accuracy, :initiative, :stealth,
                       :tech_training, :hacking, :loot_analysis, :loot_modding, :repair, :chem_modding
                     )
-                    RETURNING id
+                    RETURNING id, hp
                     """
                 ),
                 {
@@ -187,11 +185,26 @@ class StartService:
                     **derived,
                 },
             )
-        ).first()
+        ).mappings().first()
 
-        char_id = int(row[0])
+        char_id = int(row["id"])
+        max_hp = int(row["hp"])
 
-        await self._s.execute(text("INSERT INTO equipment (character_id) VALUES (:cid)"), {"cid": char_id})
+        await self._s.execute(
+            text("INSERT INTO equipment (character_id) VALUES (:cid)"),
+            {"cid": char_id},
+        )
+
+        await self._s.execute(
+            text(
+                """
+                INSERT INTO character_health (character_id, current_hp)
+                VALUES (:cid, :hp)
+                ON CONFLICT (character_id) DO NOTHING
+                """
+            ),
+            {"cid": char_id, "hp": max_hp},
+        )
 
         if creation_type == "free":
             loadout = await self._pick_free_loadout()
@@ -208,7 +221,6 @@ class StartService:
         )
 
         await self._s.commit()
-
         return await self.character_details_text(tg_id, char_id, coins_added=coins)
 
     async def character_details_text(self, tg_id: int, character_id: int, coins_added: int = 0) -> str:
@@ -219,13 +231,18 @@ class StartService:
                 text(
                     """
                     SELECT
-                      id, name, faction, creation_type, is_alive,
-                      endurance, agility, intelligence,
-                      hp, carry_capacity, load,
-                      reaction, accuracy, initiative, stealth,
-                      tech_training, hacking, loot_analysis, repair
-                    FROM characters
-                    WHERE id = :cid AND user_id = :uid
+                      c.id, c.name, c.faction, c.creation_type, c.is_alive,
+                      c.endurance, c.agility, c.intelligence,
+                      c.hp AS max_hp,
+                      COALESCE(h.current_hp, c.hp) AS current_hp,
+                      h.recovery_until,
+                      h.head_injury, h.torso_injury, h.arm_injury, h.leg_injury,
+                      c.carry_capacity, c.load,
+                      c.reaction, c.accuracy, c.initiative, c.stealth,
+                      c.tech_training, c.hacking, c.loot_analysis, c.repair
+                    FROM characters c
+                    LEFT JOIN character_health h ON h.character_id = c.id
+                    WHERE c.id = :cid AND c.user_id = :uid
                     """
                 ),
                 {"cid": character_id, "uid": user.id},
@@ -240,26 +257,21 @@ class StartService:
                 text(
                     """
                     SELECT
-                      ih.name AS head_name, sh.tier AS head_tier, sh.armor AS head_armor, sh.reliability AS head_rel, sh.loot_analysis_bonus AS head_loot_bonus,
-                      ib.name AS body_name, sb.tier AS body_tier, sb.armor AS body_armor, sb.reliability AS body_rel, sb.carry_capacity_bonus AS body_carry_bonus,
-                      ig.name AS gloves_name, sg.tier AS gloves_tier, sg.reliability AS gloves_rel, sg.accuracy_bonus AS gloves_acc_bonus, sg.reaction_bonus AS gloves_react_bonus,
-                      it.name AS boots_name, st.tier AS boots_tier, st.reliability AS boots_rel, st.initiative_bonus AS boots_init_bonus, st.reaction_bonus AS boots_react_bonus, st.stealth_bonus AS boots_stealth_bonus,
-
+                      ih.name AS head_name, sh.tier AS head_tier, sh.armor AS head_armor, sh.reliability AS head_rel,
+                      ib.name AS body_name, sb.tier AS body_tier, sb.armor AS body_armor, sb.reliability AS body_rel,
+                      ig.name AS gloves_name, sg.tier AS gloves_tier, sg.reliability AS gloves_rel,
+                      it.name AS boots_name, st.tier AS boots_tier, st.reliability AS boots_rel,
                       w1.name AS w1_name, w1.quality_tier AS w1_tier, w1.accuracy AS w1_acc, w1.reliability AS w1_rel,
                       c1.name AS w1_caliber
                     FROM equipment e
                     LEFT JOIN items ih ON ih.id = e.head_item_id
                     LEFT JOIN item_equipment_stats sh ON sh.item_id = ih.id
-
                     LEFT JOIN items ib ON ib.id = e.body_item_id
                     LEFT JOIN item_equipment_stats sb ON sb.item_id = ib.id
-
                     LEFT JOIN items ig ON ig.id = e.gloves_item_id
                     LEFT JOIN item_equipment_stats sg ON sg.item_id = ig.id
-
                     LEFT JOIN items it ON it.id = e.boots_item_id
                     LEFT JOIN item_equipment_stats st ON st.item_id = it.id
-
                     LEFT JOIN weapons w1 ON w1.id = e.weapon_1_id
                     LEFT JOIN calibers c1 ON c1.id = w1.caliber_id
                     WHERE e.character_id = :cid
@@ -269,41 +281,24 @@ class StartService:
             )
         ).mappings().first()
 
-        def fmt_head() -> str:
-            if not eq or not eq["head_name"]:
+        def fmt_item(n: Optional[str], t: Optional[str], armor: Any = None, rel: Any = None) -> str:
+            if not n:
                 return "–"
-            n = _esc(str(eq["head_name"]))
-            t = eq["head_tier"] or "–"
-            return f"{n} – {t} – Броня {_num(eq['head_armor'])} – Надёжность {_num(eq['head_rel'])}"
-
-        def fmt_body() -> str:
-            if not eq or not eq["body_name"]:
-                return "–"
-            n = _esc(str(eq["body_name"]))
-            t = eq["body_tier"] or "–"
-            return f"{n} – {t} – Броня {_num(eq['body_armor'])} – Надёжность {_num(eq['body_rel'])}"
-
-        def fmt_gloves() -> str:
-            if not eq or not eq["gloves_name"]:
-                return "–"
-            n = _esc(str(eq["gloves_name"]))
-            t = eq["gloves_tier"] or "–"
-            return f"{n} – {t} – Надёжность {_num(eq['gloves_rel'])}"
-
-        def fmt_boots() -> str:
-            if not eq or not eq["boots_name"]:
-                return "–"
-            n = _esc(str(eq["boots_name"]))
-            t = eq["boots_tier"] or "–"
-            return f"{n} – {t} – Надёжность {_num(eq['boots_rel'])}"
+            name = _esc(str(n))
+            tier = t or "–"
+            if armor is None and rel is None:
+                return f"{name} – {tier}"
+            a = _num(armor) if armor is not None else "–"
+            r = _num(rel) if rel is not None else "–"
+            return f"{name} – {tier} – Броня {a} – Надёжность {r}"
 
         def fmt_weapon() -> str:
             if not eq or not eq["w1_name"]:
                 return "–"
-            n = _esc(str(eq["w1_name"]))
-            t = eq["w1_tier"] or "–"
-            c = _esc(str(eq["w1_caliber"] or "–"))
-            return f"{n} – {t} – {c} – Точность {eq['w1_acc']} – Надёжность {eq['w1_rel']}"
+            name = _esc(str(eq["w1_name"]))
+            tier = eq["w1_tier"] or "–"
+            cal = _esc(str(eq["w1_caliber"] or "–"))
+            return f"{name} – {tier} – {cal} – Точность {eq['w1_acc']} – Надёжность {eq['w1_rel']}"
 
         name = _esc(str(ch["name"] or "Без имени"))
         status = "жив" if ch["is_alive"] else "мертв"
@@ -323,7 +318,7 @@ class StartService:
                 "</pre>",
                 "<b>Характеристики</b>",
                 "<pre>"
-                f"Здоровье – HP:               {ch['hp']}\n"
+                f"Здоровье – HP:               {ch['current_hp']}/{ch['max_hp']}\n"
                 f"Грузоподъёмность:            {_num(ch['carry_capacity'])}\n"
                 f"Нагрузка:                    {_num(ch['load'])}\n"
                 f"Реакция:                     {_num(ch['reaction'])}\n"
@@ -335,11 +330,18 @@ class StartService:
                 f"Анализ и идентификация лута: {ch['loot_analysis']}\n"
                 f"Ремонт и модификации:        {ch['repair']}"
                 "</pre>",
+                "<b>Травмы</b>",
+                "<pre>"
+                f"Травма головы:     {ch['head_injury']}\n"
+                f"Травма туловища:   {ch['torso_injury']}\n"
+                f"Травма руки:       {ch['arm_injury']}\n"
+                f"Травма ноги:       {ch['leg_injury']}"
+                "</pre>",
                 "<b>Снаряжение</b>",
-                f"Голова – {fmt_head()}",
-                f"Тело – {fmt_body()}",
-                f"Перчатки – {fmt_gloves()}",
-                f"Ботинки – {fmt_boots()}",
+                f"Голова – {fmt_item(eq['head_name'] if eq else None, eq['head_tier'] if eq else None, eq['head_armor'] if eq else None, eq['head_rel'] if eq else None)}",
+                f"Тело – {fmt_item(eq['body_name'] if eq else None, eq['body_tier'] if eq else None, eq['body_armor'] if eq else None, eq['body_rel'] if eq else None)}",
+                f"Перчатки – {fmt_item(eq['gloves_name'] if eq else None, eq['gloves_tier'] if eq else None, None, eq['gloves_rel'] if eq else None)}",
+                f"Ботинки – {fmt_item(eq['boots_name'] if eq else None, eq['boots_tier'] if eq else None, None, eq['boots_rel'] if eq else None)}",
                 "",
                 "<b>Оружие</b>",
                 fmt_weapon(),

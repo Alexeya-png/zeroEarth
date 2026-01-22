@@ -29,6 +29,7 @@ def create_menu_kb(is_premium: bool) -> InlineKeyboardMarkup:
 def cancel_create_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="Отмена", callback_data="create:cancel")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -54,7 +55,52 @@ def chars_pick_kb(characters: Iterable[Mapping[str, Any]]) -> InlineKeyboardMark
 
 def char_detail_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="Физическое состояние", callback_data=f"char:phys:{character_id}")
+    kb.button(text="Снаряжение", callback_data=f"char:eq:{character_id}")
+    kb.button(text="Тир", callback_data=f"range:open:{character_id}")
     kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def char_physical_kb(character_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
+    kb.button(text="Назад к списку", callback_data="chars:pick")
+    kb.button(text="Меню", callback_data="menu:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def char_equipment_kb(character_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
+    kb.button(text="Назад к списку", callback_data="chars:pick")
+    kb.button(text="Меню", callback_data="menu:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def range_kb(character_id: int, selected_slot: int, slots: Mapping[int, bool]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    slot_buttons = []
+    for s in (1, 2, 3):
+        if not slots.get(s):
+            continue
+        mark = " ✅" if s == selected_slot else ""
+        slot_buttons.append((f"Оружие {s}{mark}", f"range:slot:{character_id}:{s}"))
+
+    for text_, cb in slot_buttons:
+        kb.button(text=text_, callback_data=cb)
+
+    if slot_buttons:
+        kb.adjust(len(slot_buttons))
+    else:
+        kb.adjust(1)
+
+    kb.button(text="Выстрелить ×5", callback_data=f"range:shoot:{character_id}:{selected_slot}")
+    kb.button(text="Назад", callback_data=f"range:back:{character_id}")
     kb.adjust(1)
     return kb.as_markup()

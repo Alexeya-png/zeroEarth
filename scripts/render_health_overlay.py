@@ -1,15 +1,13 @@
 # scripts/render_health_overlay.py
-# pip install pillow psycopg2-binary python-dotenv
+# pip install pillow
 
 from __future__ import annotations
 
 import argparse
-import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
-import psycopg2
-from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 
 
@@ -21,101 +19,21 @@ class Injuries:
     leg: int
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--in", dest="inp", required=True, help="body image (png with alpha)")
-    p.add_argument("--bg", dest="bg", default=None, help="background image (art.png)")
-    p.add_argument("--out", dest="out", required=True, help="output png")
-    p.add_argument("--max-hp", type=int, default=None, help="override max hp (optional)")
-    p.add_argument("--threshold", type=int, default=120, help="mask threshold if no transparency")
-
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--character-id", type=int, help="character id in DB")
-    g.add_argument("--tg-id", type=int, help="telegram user id, will pick latest character")
-
-    return p.parse_args()
+def _project_root() -> Path:
+    # scripts/render_health_overlay.py -> project root
+    return Path(__file__).resolve().parents[1]
 
 
 def resolve_path(p: str) -> Path:
     x = Path(p)
     if x.exists():
         return x
-    y = Path("assets") / p
+
+    y = _project_root() / "assets" / p
     if y.exists():
         return y
-    raise FileNotFoundError(f"No such file: {p} (also tried assets/{p})")
 
-
-def get_conn_kwargs_from_env() -> dict:
-    host = os.getenv("DB_HOST")
-    port = os.getenv("DB_PORT")
-    dbname = os.getenv("DB_NAME")
-    user = os.getenv("DB_USER")
-    password = os.getenv("DB_PASSWORD")
-
-    missing = [k for k, v in (("DB_HOST", host), ("DB_PORT", port), ("DB_NAME", dbname), ("DB_USER", user), ("DB_PASSWORD", password)) if not v]
-    if missing:
-        raise SystemExit(f"Missing env vars: {', '.join(missing)}")
-
-    try:
-        port_i = int(str(port))
-    except Exception:
-        raise SystemExit(f"DB_PORT must be int, got: {port!r}")
-
-    return {
-        "host": host,
-        "port": port_i,
-        "dbname": dbname,
-        "user": user,
-        "password": password,
-        "sslmode": "require",
-    }
-
-
-def fetch_character_state(conn_kwargs: dict, character_id: int | None, tg_id: int | None) -> tuple[int, int, Injuries]:
-    with psycopg2.connect(**conn_kwargs) as conn:
-        with conn.cursor() as cur:
-            if character_id is None:
-                cur.execute(
-                    """
-                    SELECT c.id
-                    FROM users u
-                    JOIN characters c ON c.user_id = u.id
-                    WHERE u.tg_id = %s
-                    ORDER BY c.created_at DESC, c.id DESC
-                    LIMIT 1
-                    """,
-                    (tg_id,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    raise SystemExit("No characters for this tg-id")
-                character_id = int(row[0])
-
-            cur.execute(
-                """
-                SELECT
-                  c.hp AS max_hp,
-                  COALESCE(ch.current_hp, c.hp) AS current_hp,
-                  COALESCE(ch.head_injury, 0) AS head_injury,
-                  COALESCE(ch.torso_injury, 0) AS torso_injury,
-                  COALESCE(ch.arm_injury, 0) AS arm_injury,
-                  COALESCE(ch.leg_injury, 0) AS leg_injury
-                FROM characters c
-                LEFT JOIN character_health ch ON ch.character_id = c.id
-                WHERE c.id = %s
-                """,
-                (character_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise SystemExit("Character not found")
-
-            max_hp = int(row[0])
-            current_hp = int(row[1])
-            inj = Injuries(int(row[2]), int(row[3]), int(row[4]), int(row[5]))
-            current_hp = max(0, min(max_hp, current_hp))
-            return max_hp, current_hp, inj
+    raise FileNotFoundError(f"No such file: {p} (also tried {y})")
 
 
 def make_mask(img_rgba: Image.Image, threshold: int) -> Image.Image:
@@ -172,7 +90,7 @@ def cutout(img_rgba: Image.Image, mask: Image.Image) -> Image.Image:
 
 def draw_fill(base: Image.Image, mask: Image.Image, lost_ratio: float) -> None:
     w, h = base.size
-    lost_ratio = max(0.0, min(1.0, lost_ratio))
+    lost_ratio = max(0.0, min(1.0, float(lost_ratio)))
     fill_h = int(h * lost_ratio)
     if fill_h <= 0:
         return
@@ -192,7 +110,7 @@ def draw_fill(base: Image.Image, mask: Image.Image, lost_ratio: float) -> None:
 
 
 def draw_x(draw: ImageDraw.ImageDraw, cx: int, cy: int, size: int, color: tuple[int, int, int, int]) -> None:
-    s = size
+    s = int(size)
     w = max(2, s // 4)
     draw.line([(cx - s, cy - s), (cx + s, cy + s)], fill=color, width=w)
     draw.line([(cx - s, cy + s), (cx + s, cy - s)], fill=color, width=w)
@@ -215,45 +133,85 @@ def draw_injuries(base: Image.Image, injuries: Injuries) -> None:
 
     color = (220, 30, 30, 255)
 
-    for key, lvl in (("head", injuries.head), ("torso", injuries.torso), ("arm", injuries.arm), ("leg", injuries.leg)):
-        if lvl <= 0:
+    for key, lvl in (
+        ("head", injuries.head),
+        ("torso", injuries.torso),
+        ("arm", injuries.arm),
+        ("leg", injuries.leg),
+    ):
+        if int(lvl) <= 0:
             continue
         rx, ry = pts[key]
         cx, cy = int(w * rx), int(h * ry)
-        draw_x(d, cx, cy, size_by_lvl(lvl), color)
+        draw_x(d, cx, cy, size_by_lvl(int(lvl)), color)
 
 
-def main() -> None:
-    load_dotenv()
+def render_health_overlay(
+    *,
+    inp: str,
+    out: str,
+    max_hp: int,
+    current_hp: int,
+    injuries: Injuries,
+    bg: Optional[str] = None,
+    threshold: int = 120,
+) -> None:
+    max_hp_i = max(1, int(max_hp))
+    current_hp_i = max(0, min(max_hp_i, int(current_hp)))
 
-    a = parse_args()
-    conn_kwargs = get_conn_kwargs_from_env()
-
-    max_hp, current_hp, injuries = fetch_character_state(conn_kwargs, a.character_id, a.tg_id)
-    if a.max_hp is not None:
-        max_hp = max(1, int(a.max_hp))
-        current_hp = max(0, min(max_hp, current_hp))
-
-    src = Image.open(resolve_path(a.inp)).convert("RGBA")
-    mask = remove_floor_from_mask(make_mask(src, a.threshold))
+    src = Image.open(resolve_path(inp)).convert("RGBA")
+    mask = remove_floor_from_mask(make_mask(src, threshold))
     overlay = cutout(src, mask)
 
-    lost_ratio = (max_hp - current_hp) / max_hp
+    lost_ratio = (max_hp_i - current_hp_i) / max_hp_i
     draw_fill(overlay, mask, lost_ratio)
     draw_injuries(overlay, injuries)
 
-    if a.bg:
-        bg = Image.open(resolve_path(a.bg)).convert("RGBA")
-        if bg.size != overlay.size:
-            bg = bg.resize(overlay.size, Image.Resampling.LANCZOS)
-        out_img = bg.copy()
+    if bg:
+        bg_img = Image.open(resolve_path(bg)).convert("RGBA")
+        if bg_img.size != overlay.size:
+            bg_img = bg_img.resize(overlay.size, Image.Resampling.LANCZOS)
+        out_img = bg_img.copy()
         out_img.alpha_composite(overlay)
     else:
         out_img = overlay
 
-    out_path = Path(a.out)
+    out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_img.save(out_path, "PNG")
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--in", dest="inp", required=True, help="body image (png with alpha)")
+    p.add_argument("--bg", dest="bg", default=None, help="background image (art.png)")
+    p.add_argument("--out", dest="out", required=True, help="output png")
+    p.add_argument("--max-hp", type=int, required=True, help="max HP")
+    p.add_argument("--current-hp", type=int, required=True, help="current HP")
+    p.add_argument("--head-injury", type=int, default=0)
+    p.add_argument("--torso-injury", type=int, default=0)
+    p.add_argument("--arm-injury", type=int, default=0)
+    p.add_argument("--leg-injury", type=int, default=0)
+    p.add_argument("--threshold", type=int, default=120, help="mask threshold if no transparency")
+    return p.parse_args()
+
+
+def main() -> None:
+    a = parse_args()
+    render_health_overlay(
+        inp=a.inp,
+        bg=a.bg,
+        out=a.out,
+        max_hp=a.max_hp,
+        current_hp=a.current_hp,
+        injuries=Injuries(
+            head=a.head_injury,
+            torso=a.torso_injury,
+            arm=a.arm_injury,
+            leg=a.leg_injury,
+        ),
+        threshold=a.threshold,
+    )
 
 
 if __name__ == "__main__":

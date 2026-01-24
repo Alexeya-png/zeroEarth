@@ -20,6 +20,7 @@ from modules.start.keyboards import (
 )
 
 
+
 router = Router()
 log = logging.getLogger(__name__)
 
@@ -140,3 +141,5 @@ async def open_character_equipment(call: CallbackQuery, db_session: AsyncSession
 
     await safe_edit(call, text_out, reply_markup=char_equipment_kb(character_id))
     await call.answer()
+
+

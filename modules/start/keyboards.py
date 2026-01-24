@@ -58,9 +58,10 @@ def char_detail_kb(character_id: int) -> InlineKeyboardMarkup:
     kb.button(text="Физическое состояние", callback_data=f"char:phys:{character_id}")
     kb.button(text="Снаряжение", callback_data=f"char:eq:{character_id}")
     kb.button(text="Тир", callback_data=f"range:open:{character_id}")
+    kb.button(text="Склад", callback_data=f"char:stash:{character_id}")
     kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
-    kb.adjust(1)
+    kb.adjust(2)
     return kb.as_markup()
 
 
@@ -79,6 +80,15 @@ def char_equipment_kb(character_id: int) -> InlineKeyboardMarkup:
     kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def char_stash_kb(character_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
+    kb.button(text="Назад к списку", callback_data="chars:pick")
+    kb.button(text="Меню", callback_data="menu:back")
+    kb.adjust(2)
     return kb.as_markup()
 
 

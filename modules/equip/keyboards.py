@@ -17,6 +17,14 @@ class ArmorChoice:
     reliability: int
 
 
+@dataclass(frozen=True)
+class AmmoChoice:
+    item_id: int
+    name: str
+    qty: int
+    is_equipped: bool = False
+
+
 def equip_main_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
 
@@ -29,8 +37,58 @@ def equip_main_kb(character_id: int) -> InlineKeyboardMarkup:
     kb.button(text="Оружие 2", callback_data=f"equip:wselect:{character_id}:2")
     kb.button(text="Оружие 3", callback_data=f"equip:wselect:{character_id}:3")
 
+    kb.button(text="Аммуниция", callback_data=f"equip:ammo:open:{character_id}")
+
     kb.button(text="Назад", callback_data=f"char:eq:{character_id}")
     kb.adjust(2)
+    return kb.as_markup()
+
+
+def equip_ammo_main_kb(character_id: int, weapons: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    for slot, name in weapons:
+        kb.button(text=f"{slot} – {name}", callback_data=f"equip:ammo:weapon:{character_id}:{slot}")
+
+    kb.button(text="Назад", callback_data=f"equip:open:{character_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def equip_ammo_weapon_kb(
+    character_id: int,
+    slot: int,
+    ammo: Iterable[AmmoChoice],
+    can_add: bool,
+    can_sub: bool,
+    can_clear: bool,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    ammo_list = list(ammo)
+
+    for a in ammo_list:
+        suffix = f" ×{a.qty}" if a.qty > 1 else ""
+        mark = "● " if a.is_equipped else ""
+        kb.button(
+            text=f"{mark}{a.name}{suffix}",
+            callback_data=f"equip:ammo:set:{character_id}:{slot}:{a.item_id}",
+        )
+
+    if can_add:
+        kb.button(text="➕", callback_data=f"equip:ammo:add:{character_id}:{slot}")
+    if can_sub:
+        kb.button(text="➖", callback_data=f"equip:ammo:sub:{character_id}:{slot}")
+    if can_clear:
+        kb.button(text="Снять", callback_data=f"equip:ammo:clear:{character_id}:{slot}")
+
+    kb.button(text="Назад", callback_data=f"equip:ammo:open:{character_id}")
+
+    controls = int(bool(can_add)) + int(bool(can_sub)) + int(bool(can_clear))
+    if controls:
+        kb.adjust(*([1] * len(ammo_list)), controls, 1)
+    else:
+        kb.adjust(*([1] * len(ammo_list)), 1)
     return kb.as_markup()
 
 

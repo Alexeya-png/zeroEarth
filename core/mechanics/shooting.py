@@ -74,7 +74,7 @@ def calc_shooting_model(
     jamK = float(p["jamK"])
 
     AttackScore = ACCc + ACCw
-    DodgeScore = 12.0 * REAd
+    DodgeScore = 4 * REAd
     p_hit = clamp((AttackScore - DodgeScore + 20.0) / 100.0, 0.05, 0.95)
 
     p_jam = ((100.0 - RELw) / 100.0) ** 4 * jamK

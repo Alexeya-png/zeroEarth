@@ -76,9 +76,30 @@ def char_physical_kb(character_id: int) -> InlineKeyboardMarkup:
 
 def char_equipment_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="Улучшить оружие", callback_data=f"wup:open:{character_id}")
+    kb.button(text="Тест: бой", callback_data=f"clash:test:{character_id}")
     kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
     kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def clash_pick_enemy_kb(character_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Манекен", callback_data=f"clash:run:{character_id}:mannequin")
+    kb.button(text="Рейдер", callback_data=f"clash:run:{character_id}:raider")
+    kb.button(text="Охранник", callback_data=f"clash:run:{character_id}:guard")
+    kb.button(text="Назад", callback_data=f"char:eq:{character_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def clash_result_kb(character_id: int, enemy_key: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Повторить", callback_data=f"clash:run:{character_id}:{enemy_key}")
+    kb.button(text="Выбрать другого", callback_data=f"clash:test:{character_id}")
+    kb.button(text="Назад", callback_data=f"char:eq:{character_id}")
     kb.adjust(1)
     return kb.as_markup()
 

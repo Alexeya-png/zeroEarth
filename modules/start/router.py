@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.common.tg import safe_edit
 from modules.start.service import StartService, CreateCharacterError
-from modules.start.keyboards import main_menu_kb, create_menu_kb, cancel_create_kb
+from modules.start.keyboards import (
+    main_menu_kb,
+    create_menu_kb,
+    cancel_create_kb,
+    my_chars_kb,
+    chars_pick_kb,
+)
 from modules.start.states import CreateCharacterFlow
 
 
@@ -31,6 +37,35 @@ async def menu_back(call: CallbackQuery, db_session: AsyncSession, state: FSMCon
     svc = StartService(db_session)
     await svc.ensure_user(call.from_user.id)
     await safe_edit(call, "Меню", reply_markup=main_menu_kb())
+    await call.answer()
+
+
+@router.callback_query(F.data == "menu:chars")
+async def menu_chars(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    await state.clear()
+    svc = StartService(db_session)
+    await svc.ensure_user(call.from_user.id)
+
+    chars = await svc.list_characters(call.from_user.id)
+    text_out = await svc.characters_summary_text(call.from_user.id)
+
+    await safe_edit(call, text_out, reply_markup=my_chars_kb(has_chars=bool(chars)))
+    await call.answer()
+
+
+@router.callback_query(F.data == "chars:pick")
+async def chars_pick(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    await state.clear()
+    svc = StartService(db_session)
+    await svc.ensure_user(call.from_user.id)
+
+    chars = await svc.list_characters(call.from_user.id)
+    if not chars:
+        await safe_edit(call, "У тебя нет персонажей.", reply_markup=main_menu_kb())
+        await call.answer()
+        return
+
+    await safe_edit(call, "<b>Выбор персонажа</b>\nНажми на персонажа.", reply_markup=chars_pick_kb(chars))
     await call.answer()
 
 

@@ -76,6 +76,7 @@ def char_physical_kb(character_id: int) -> InlineKeyboardMarkup:
 
 def char_equipment_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="Снарядить бойца", callback_data=f"equip:open:{character_id}")
     kb.button(text="Улучшить оружие", callback_data=f"wup:open:{character_id}")
     kb.button(text="Тест: бой", callback_data=f"clash:test:{character_id}")
     kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")

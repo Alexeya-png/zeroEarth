@@ -8,6 +8,7 @@ from core.middlewares.db import DbSessionMiddleware
 from db.session import create_engine_and_sessionmaker, init_db
 
 from modules.characters.router import router as characters_router
+from modules.equip.router import router as equip_router
 from modules.range.router import router as range_router
 from modules.stash.router import router as stash_router
 from modules.start.router import router as start_router
@@ -29,6 +30,7 @@ async def run() -> None:
 
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.include_router(characters_router)
+    dp.include_router(equip_router)
     dp.include_router(stash_router)
     dp.include_router(range_router)
     dp.include_router(weapon_upgrades_router)

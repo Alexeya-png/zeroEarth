@@ -1,5 +1,6 @@
 import asyncio
 import os
+import json
 from dataclasses import dataclass
 from typing import Dict, List
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
@@ -246,6 +247,11 @@ AMMO: List[AmmoSeed] = [
 ]
 
 
+def ammo_item_name(caliber_code: str, bullet_type: str) -> str:
+    cal = CALIBERS.get(caliber_code) or caliber_code
+    return f"Патроны {cal} {bullet_type}"
+
+
 async def main() -> None:
     db_url = os.getenv("DB_URL") or os.getenv("DATABASE_URL")
     if not db_url:
@@ -368,6 +374,60 @@ async def main() -> None:
                     ),
                     {"cid": cid, "name": a.bullet_type, "damage": a.damage, "ap": a.armor_penetration},
                 )
+
+        # ammo items (physical) as обычные предметы в items
+        items_available = True
+        try:
+            await s.execute(text("SELECT 1 FROM items LIMIT 1"))
+        except Exception:
+            items_available = False
+
+        if items_available:
+            for a in AMMO:
+                name = ammo_item_name(a.caliber_code, a.bullet_type)
+                meta_json = json.dumps(
+                    {
+                        "kind": "ammo",
+                        "caliber_code": a.caliber_code,
+                        "bullet_type": a.bullet_type,
+                        "damage": a.damage,
+                        "armor_penetration": a.armor_penetration,
+                    },
+                    ensure_ascii=False,
+                )
+
+                row_item = (
+                    await s.execute(
+                        text("SELECT id FROM items WHERE name = :name"),
+                        {"name": name},
+                    )
+                ).first()
+
+                if row_item:
+                    await s.execute(
+                        text(
+                            """
+                            UPDATE items
+                            SET item_type = 'misc',
+                                meta_json = (:meta_json)::jsonb,
+                                weight = 0,
+                                price = 0,
+                                loot_type = 'common'
+                            WHERE id = :id
+                            """
+                        ),
+                        {"id": int(row_item[0]), "meta_json": meta_json},
+                    )
+                else:
+                    await s.execute(
+                        text(
+                            """
+                            INSERT INTO items (item_type, name, meta_json, weight, price, loot_type)
+                            VALUES ('misc', :name, (:meta_json)::jsonb, 0, 0, 'common')
+                            """
+                        ),
+                        {"name": name, "meta_json": meta_json},
+                    )
 
         await s.commit()
 

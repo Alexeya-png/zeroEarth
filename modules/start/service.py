@@ -239,6 +239,17 @@ class StartService:
         loadout = await (self._pick_free_loadout() if creation_type == "free" else self._pick_premium_loadout())
         await self._apply_loadout(cid, loadout)
 
+        # стартовые патроны как обычный предмет на складе
+        try:
+            await self._give_start_ammo(
+                character_id=cid,
+                weapon_id=loadout.get("weapon_1_id"),
+                creation_type=creation_type,
+            )
+        except Exception:
+            # патроны не должны ломать создание персонажа
+            pass
+
         await self._s.execute(
             text("UPDATE users SET balance = balance + :coins WHERE id = :uid"),
             {"coins": coins, "uid": user.id},
@@ -891,4 +902,75 @@ class StartService:
                 """
             ),
             {"cid": character_id, **loadout},
+        )
+
+    async def _give_start_ammo(self, character_id: int, weapon_id: Optional[int], creation_type: str) -> None:
+        if not weapon_id:
+            return
+
+        w = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT
+                      w.category,
+                      c.code AS caliber_code,
+                      COALESCE(c.name, c.code) AS caliber_name
+                    FROM weapons w
+                    JOIN calibers c ON c.id = w.caliber_id
+                    WHERE w.id = :wid
+                    """
+                ),
+                {"wid": int(weapon_id)},
+            )
+        ).mappings().first()
+
+        if not w:
+            return
+
+        caliber_code = str(w.get("caliber_code") or "")
+        caliber_name = str(w.get("caliber_name") or caliber_code)
+        category = str(w.get("category") or "")
+
+        # тип патронов по умолчанию
+        bullet_type = "Buckshot" if caliber_code == "12ga" else "FMJ"
+
+        # количество патронов на старте
+        if creation_type == "premium":
+            qty = 80
+        else:
+            qty = 40
+
+        # небольшая корректировка под категории
+        if category in ("lmg",):
+            qty = max(qty, 120)
+        elif category in ("smg",):
+            qty = max(qty, 90)
+        elif category in ("shotgun",):
+            qty = max(24, min(qty, 60))
+
+        item_name = f"Патроны {caliber_name} {bullet_type}"
+
+        item = (
+            await self._s.execute(
+                text("SELECT id FROM items WHERE name = :name"),
+                {"name": item_name},
+            )
+        ).first()
+
+        if not item:
+            return
+
+        item_id = int(item[0])
+
+        await self._s.execute(
+            text(
+                """
+                INSERT INTO character_inventory (character_id, item_id, qty)
+                VALUES (:cid, :iid, :qty)
+                ON CONFLICT (character_id, item_id)
+                DO UPDATE SET qty = character_inventory.qty + EXCLUDED.qty
+                """
+            ),
+            {"cid": int(character_id), "iid": item_id, "qty": int(qty)},
         )

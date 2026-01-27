@@ -331,84 +331,92 @@ class EquipService:
         if to_slot not in (1, 2, 3):
             raise EquipError("Некорректный слот.")
 
-        row = (
+        rows = (
             await self._s.execute(
                 text(
                     """
-                    SELECT weapon_1_id, weapon_2_id, weapon_3_id
-                    FROM equipment
-                    WHERE character_id = :cid
+                    SELECT
+                      ci.item_id AS weapon_id,
+                      w.name AS weapon_name
+                    FROM character_inventory ci
+                    JOIN weapons w ON w.id = ci.item_id
+                    WHERE ci.character_id = :cid
+                      AND ci.qty > 0
+                    ORDER BY w.id
                     """
                 ),
                 {"cid": int(character_id)},
             )
-        ).first()
-        if not row:
-            return {}
+        ).mappings().all()
 
         out: dict[int, str] = {}
-        for idx, wid in enumerate(row, start=1):
-            if idx == to_slot:
-                continue
-            if wid is None:
-                continue
-            w = (
-                await self._s.execute(
-                    text("SELECT name FROM weapons WHERE id = :id"),
-                    {"id": int(wid)},
-                )
-            ).first()
-            out[idx] = str(w[0]) if w else "Оружие"
+        for r in rows:
+            out[int(r["weapon_id"])] = str(r["weapon_name"])
         return out
 
-    async def move_weapon_between_slots(self, tg_id: int, character_id: int, from_slot: int, to_slot: int) -> None:
+    async def equip_weapon(self, tg_id: int, character_id: int, to_slot: int, weapon_id: int) -> None:
         await self._get_character(tg_id, character_id)
         await self._ensure_equipment_row(character_id)
 
-        if from_slot not in (1, 2, 3) or to_slot not in (1, 2, 3) or from_slot == to_slot:
+        if to_slot not in (1, 2, 3):
             raise EquipError("Некорректный слот.")
 
-        col_from = f"weapon_{int(from_slot)}_id"
-        col_to = f"weapon_{int(to_slot)}_id"
-
-        row = (
+        ok = (
             await self._s.execute(
                 text(
-                    f"""
-                    SELECT {col_from}, {col_to}
-                    FROM equipment
-                    WHERE character_id = :cid
+                    """
+                    SELECT 1
+                    FROM character_inventory ci
+                    JOIN weapons w ON w.id = ci.item_id
+                    WHERE ci.character_id = :cid
+                      AND ci.item_id = :wid
+                      AND ci.qty > 0
                     """
                 ),
-                {"cid": int(character_id)},
+                {"cid": int(character_id), "wid": int(weapon_id)},
             )
         ).first()
-        if not row:
-            raise EquipError("Экипировка не найдена.")
+        if not ok:
+            raise EquipError("Оружие не найдено на складе.")
 
-        w_from = row[0]
-        w_to = row[1]
-        if w_from is None:
-            raise EquipError("В выбранном слоте нет оружия.")
-
+        col = f"weapon_{int(to_slot)}_id"
         await self._s.execute(
             text(
                 f"""
                 UPDATE equipment
-                SET {col_to} = :w_from,
-                    {col_from} = :w_to
+                SET {col} = :wid
                 WHERE character_id = :cid
                 """
             ),
-            {"cid": int(character_id), "w_from": int(w_from), "w_to": int(w_to) if w_to is not None else None},
+            {"cid": int(character_id), "wid": int(weapon_id)},
         )
+        await self._s.commit()
 
+    async def unequip_weapon(self, tg_id: int, character_id: int, slot: int) -> None:
+        await self._get_character(tg_id, character_id)
+        await self._ensure_equipment_row(character_id)
+
+        if slot not in (1, 2, 3):
+            raise EquipError("Некорректный слот.")
+
+        col = f"weapon_{int(slot)}_id"
+        await self._s.execute(
+            text(
+                f"""
+                UPDATE equipment
+                SET {col} = NULL
+                WHERE character_id = :cid
+                """
+            ),
+            {"cid": int(character_id)},
+        )
         await self._s.commit()
 
     async def ammo_weapons(self, tg_id: int, character_id: int) -> dict[int, dict[str, Any]]:
         await self._get_character(tg_id, character_id)
+        await self._ensure_equipment_row(character_id)
 
-        eq = (
+        row = (
             await self._s.execute(
                 text(
                     """
@@ -420,11 +428,11 @@ class EquipService:
                 {"cid": int(character_id)},
             )
         ).first()
-        if not eq:
+        if not row:
             return {}
 
         slots: dict[int, int] = {}
-        for idx, wid in enumerate(eq, start=1):
+        for idx, wid in enumerate(row, start=1):
             if wid is not None:
                 slots[idx] = int(wid)
 
@@ -435,9 +443,10 @@ class EquipService:
                     text(
                         """
                         SELECT
-                          w.id, w.name,
-                          w.caliber_id,
-                          c.code,
+                          w.id AS weapon_id,
+                          w.name AS weapon_name,
+                          w.caliber_id AS caliber_id,
+                          c.code AS caliber_code,
                           COALESCE(c.name, '') AS caliber_name
                         FROM weapons w
                         JOIN calibers c ON c.id = w.caliber_id
@@ -446,16 +455,19 @@ class EquipService:
                     ),
                     {"wid": int(wid)},
                 )
-            ).first()
+            ).mappings().first()
+
             if not w:
                 continue
+
             out[int(slot)] = {
-                "weapon_id": int(w[0]),
-                "weapon_name": str(w[1]),
-                "caliber_id": int(w[2]),
-                "caliber_code": str(w[3]),
-                "caliber_name": str(w[4] or ""),
+                "weapon_id": int(w["weapon_id"]),
+                "weapon_name": str(w["weapon_name"]),
+                "caliber_id": int(w["caliber_id"]),
+                "caliber_code": str(w["caliber_code"]),
+                "caliber_name": str(w["caliber_name"] or ""),
             }
+
         return out
 
     async def ammo_total_loaded(self, character_id: int) -> int:
@@ -488,7 +500,8 @@ class EquipService:
         ).first()
         if not row:
             return (None, 0)
-        return (row[0] if row[0] is not None else None, int(row[1] or 0))
+        ammo_id, qty = row
+        return (int(ammo_id) if ammo_id is not None else None, int(qty or 0))
 
     async def ammo_compatible_types(self, caliber_id: int) -> list[dict[str, Any]]:
         rows = (
@@ -505,6 +518,117 @@ class EquipService:
             )
         ).mappings().all()
         return [dict(r) for r in rows]
+
+    async def ammo_inventory_qty(self, character_id: int, ammo_type_id: int) -> int:
+        qty = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(ci.qty), 0)
+                    FROM character_inventory ci
+                    JOIN items i ON i.id = ci.item_id
+                    JOIN ammo_types a ON a.id = :aid
+                    JOIN calibers c ON c.id = a.caliber_id
+                    WHERE ci.character_id = :cid
+                      AND ci.qty > 0
+                      AND i.item_type = 'misc'
+                      AND (i.meta_json->>'kind') = 'ammo'
+                      AND (i.meta_json->>'caliber_code') = c.code
+                      AND (i.meta_json->>'bullet_type') = a.name
+                    """
+                ),
+                {"cid": int(character_id), "aid": int(ammo_type_id)},
+            )
+        ).scalar_one_or_none()
+        return int(qty or 0)
+
+    async def _ammo_item_id_for_type(self, ammo_type_id: int) -> int:
+        row = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT i.id
+                    FROM items i
+                    JOIN ammo_types a ON a.id = :aid
+                    JOIN calibers c ON c.id = a.caliber_id
+                    WHERE i.item_type = 'misc'
+                      AND (i.meta_json->>'kind') = 'ammo'
+                      AND (i.meta_json->>'caliber_code') = c.code
+                      AND (i.meta_json->>'bullet_type') = a.name
+                    ORDER BY i.id
+                    LIMIT 1
+                    """
+                ),
+                {"aid": int(ammo_type_id)},
+            )
+        ).first()
+        if not row:
+            raise EquipError("Предмет патронов не найден.")
+        return int(row[0])
+
+    async def _ammo_inventory_take(self, character_id: int, ammo_type_id: int, qty: int) -> None:
+        if qty <= 0:
+            return
+
+        item_id = await self._ammo_item_id_for_type(int(ammo_type_id))
+
+        row = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT qty
+                    FROM character_inventory
+                    WHERE character_id = :cid AND item_id = :iid
+                    """
+                ),
+                {"cid": int(character_id), "iid": int(item_id)},
+            )
+        ).first()
+
+        have = int(row[0]) if row and row[0] is not None else 0
+        if have < int(qty):
+            raise EquipError("Недостаточно патронов на складе.")
+
+        new_qty = int(have) - int(qty)
+        if new_qty > 0:
+            await self._s.execute(
+                text(
+                    """
+                    UPDATE character_inventory
+                    SET qty = :q
+                    WHERE character_id = :cid AND item_id = :iid
+                    """
+                ),
+                {"cid": int(character_id), "iid": int(item_id), "q": int(new_qty)},
+            )
+        else:
+            await self._s.execute(
+                text(
+                    """
+                    DELETE FROM character_inventory
+                    WHERE character_id = :cid AND item_id = :iid
+                    """
+                ),
+                {"cid": int(character_id), "iid": int(item_id)},
+            )
+
+    async def _ammo_inventory_put(self, character_id: int, ammo_type_id: int, qty: int) -> None:
+        if qty <= 0:
+            return
+
+        item_id = await self._ammo_item_id_for_type(int(ammo_type_id))
+
+        await self._s.execute(
+            text(
+                """
+                INSERT INTO character_inventory (character_id, item_id, qty)
+                VALUES (:cid, :iid, :qty)
+                ON CONFLICT (character_id, item_id)
+                DO UPDATE SET qty = character_inventory.qty + EXCLUDED.qty
+                """
+            ),
+            {"cid": int(character_id), "iid": int(item_id), "qty": int(qty)},
+        )
 
     async def ammo_set_type(self, tg_id: int, character_id: int, slot: int, ammo_type_id: int) -> None:
         weapons = await self.ammo_weapons(tg_id, character_id)
@@ -527,27 +651,51 @@ class EquipService:
         if not ok:
             raise EquipError("Этот тип боеприпасов не подходит к оружию.")
 
-        _, cur_qty = await self.ammo_slot_state(character_id, slot)
+        cur_ammo_id, cur_qty = await self.ammo_slot_state(character_id, slot)
         total = await self.ammo_total_loaded(character_id)
 
-        new_qty = cur_qty
+        new_qty = int(cur_qty)
         if new_qty <= 0:
             if total >= self.MAX_AMMO_ON_CHARACTER:
                 raise EquipError("Максимум 9 боеприпасов на бойце.")
             new_qty = 1
 
-        await self._s.execute(
-            text(
-                """
-                INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
-                VALUES (:cid, :slot, :aid, :qty)
-                ON CONFLICT (character_id, weapon_slot)
-                DO UPDATE SET ammo_type_id = EXCLUDED.ammo_type_id, qty = EXCLUDED.qty
-                """
-            ),
-            {"cid": int(character_id), "slot": int(slot), "aid": int(ammo_type_id), "qty": int(new_qty)},
-        )
-        await self._s.commit()
+        take_qty = 0
+        put_old_qty = 0
+        if cur_ammo_id is not None and int(cur_ammo_id) == int(ammo_type_id):
+            take_qty = max(0, int(new_qty) - int(cur_qty))
+        else:
+            if cur_ammo_id is not None and int(cur_qty) > 0:
+                put_old_qty = int(cur_qty)
+            take_qty = int(new_qty)
+
+        if int(take_qty) > 0:
+            inv_qty = await self.ammo_inventory_qty(character_id, int(ammo_type_id))
+            if int(inv_qty) < int(take_qty):
+                raise EquipError("Недостаточно патронов на складе.")
+
+        try:
+            if put_old_qty > 0 and cur_ammo_id is not None:
+                await self._ammo_inventory_put(character_id, int(cur_ammo_id), int(put_old_qty))
+
+            if take_qty > 0:
+                await self._ammo_inventory_take(character_id, int(ammo_type_id), int(take_qty))
+
+            await self._s.execute(
+                text(
+                    """
+                    INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
+                    VALUES (:cid, :slot, :aid, :qty)
+                    ON CONFLICT (character_id, weapon_slot)
+                    DO UPDATE SET ammo_type_id = EXCLUDED.ammo_type_id, qty = EXCLUDED.qty
+                    """
+                ),
+                {"cid": int(character_id), "slot": int(slot), "aid": int(ammo_type_id), "qty": int(new_qty)},
+            )
+            await self._s.commit()
+        except Exception:
+            await self._s.rollback()
+            raise
 
     async def ammo_add(self, tg_id: int, character_id: int, slot: int) -> None:
         weapons = await self.ammo_weapons(tg_id, character_id)
@@ -557,22 +705,33 @@ class EquipService:
         ammo_id, _ = await self.ammo_slot_state(character_id, slot)
         if ammo_id is None:
             raise EquipError("Сначала выбери тип боеприпаса.")
+
         total = await self.ammo_total_loaded(character_id)
         if total >= self.MAX_AMMO_ON_CHARACTER:
             raise EquipError("Максимум 9 боеприпасов на бойце.")
 
-        await self._s.execute(
-            text(
-                """
-                INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
-                VALUES (:cid, :slot, :aid, 1)
-                ON CONFLICT (character_id, weapon_slot)
-                DO UPDATE SET qty = character_ammo_loadout.qty + 1
-                """
-            ),
-            {"cid": int(character_id), "slot": int(slot), "aid": int(ammo_id)},
-        )
-        await self._s.commit()
+        inv_qty = await self.ammo_inventory_qty(character_id, int(ammo_id))
+        if int(inv_qty) < 1:
+            raise EquipError("На складе нет таких патронов.")
+
+        try:
+            await self._ammo_inventory_take(character_id, int(ammo_id), 1)
+
+            await self._s.execute(
+                text(
+                    """
+                    INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
+                    VALUES (:cid, :slot, :aid, 1)
+                    ON CONFLICT (character_id, weapon_slot)
+                    DO UPDATE SET qty = character_ammo_loadout.qty + 1
+                    """
+                ),
+                {"cid": int(character_id), "slot": int(slot), "aid": int(ammo_id)},
+            )
+            await self._s.commit()
+        except Exception:
+            await self._s.rollback()
+            raise
 
     async def ammo_sub(self, tg_id: int, character_id: int, slot: int) -> None:
         weapons = await self.ammo_weapons(tg_id, character_id)
@@ -580,11 +739,54 @@ class EquipService:
             raise EquipError("Оружие в этом слоте не найдено.")
 
         ammo_id, qty = await self.ammo_slot_state(character_id, slot)
-        if ammo_id is None or qty <= 0:
+        if ammo_id is None or int(qty) <= 0:
             return
 
-        new_qty = qty - 1
-        if new_qty <= 0:
+        new_qty = int(qty) - 1
+
+        try:
+            await self._ammo_inventory_put(character_id, int(ammo_id), 1)
+
+            if new_qty <= 0:
+                await self._s.execute(
+                    text(
+                        """
+                        INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
+                        VALUES (:cid, :slot, NULL, 0)
+                        ON CONFLICT (character_id, weapon_slot)
+                        DO UPDATE SET ammo_type_id = NULL, qty = 0
+                        """
+                    ),
+                    {"cid": int(character_id), "slot": int(slot)},
+                )
+            else:
+                await self._s.execute(
+                    text(
+                        """
+                        UPDATE character_ammo_loadout
+                        SET qty = :q
+                        WHERE character_id = :cid AND weapon_slot = :slot
+                        """
+                    ),
+                    {"cid": int(character_id), "slot": int(slot), "q": int(new_qty)},
+                )
+
+            await self._s.commit()
+        except Exception:
+            await self._s.rollback()
+            raise
+
+    async def ammo_clear(self, tg_id: int, character_id: int, slot: int) -> None:
+        weapons = await self.ammo_weapons(tg_id, character_id)
+        if slot not in weapons:
+            raise EquipError("Оружие в этом слоте не найдено.")
+
+        ammo_id, qty = await self.ammo_slot_state(character_id, slot)
+
+        try:
+            if ammo_id is not None and int(qty) > 0:
+                await self._ammo_inventory_put(character_id, int(ammo_id), int(qty))
+
             await self._s.execute(
                 text(
                     """
@@ -596,33 +798,7 @@ class EquipService:
                 ),
                 {"cid": int(character_id), "slot": int(slot)},
             )
-        else:
-            await self._s.execute(
-                text(
-                    """
-                    UPDATE character_ammo_loadout
-                    SET qty = :q
-                    WHERE character_id = :cid AND weapon_slot = :slot
-                    """
-                ),
-                {"cid": int(character_id), "slot": int(slot), "q": int(new_qty)},
-            )
-        await self._s.commit()
-
-    async def ammo_clear(self, tg_id: int, character_id: int, slot: int) -> None:
-        weapons = await self.ammo_weapons(tg_id, character_id)
-        if slot not in weapons:
-            raise EquipError("Оружие в этом слоте не найдено.")
-
-        await self._s.execute(
-            text(
-                """
-                INSERT INTO character_ammo_loadout (character_id, weapon_slot, ammo_type_id, qty)
-                VALUES (:cid, :slot, NULL, 0)
-                ON CONFLICT (character_id, weapon_slot)
-                DO UPDATE SET ammo_type_id = NULL, qty = 0
-                """
-            ),
-            {"cid": int(character_id), "slot": int(slot)},
-        )
-        await self._s.commit()
+            await self._s.commit()
+        except Exception:
+            await self._s.rollback()
+            raise

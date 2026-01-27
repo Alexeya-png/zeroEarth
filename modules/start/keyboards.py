@@ -8,8 +8,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="Мои персонажи", callback_data="menu:chars")
-    kb.button(text="Создать персонажа", callback_data="menu:create")
+    kb.button(text="Персонаж", callback_data="menu:char")
+    kb.button(text="Склад", callback_data="menu:stash")
+    kb.button(text="Рынок", callback_data="menu:market")
+    kb.button(text="Квесты", callback_data="menu:quests")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -37,18 +39,35 @@ def my_chars_kb(has_chars: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if has_chars:
         kb.button(text="Выбор персонажа", callback_data="chars:pick")
+    kb.button(text="Создать персонажа", callback_data="menu:create")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def chars_pick_kb(characters: Iterable[Mapping[str, Any]]) -> InlineKeyboardMarkup:
+def chars_pick_kb(
+    characters: Iterable[Mapping[str, Any]],
+    *,
+    item_cb_prefix: str = "chars:open",
+    show_create: bool = True,
+    create_cb: str = "menu:create",
+    show_menu: bool = True,
+    menu_cb: str = "menu:back",
+    menu_text: str = "Меню",
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+
     for ch in characters:
         cid = int(ch["id"])
         name = str(ch["name"] or "Без имени")
-        kb.button(text=f"#{cid} – {name}", callback_data=f"chars:open:{cid}")
-    kb.button(text="Назад", callback_data="menu:chars")
+        kb.button(text=f"#{cid} – {name}", callback_data=f"{item_cb_prefix}:{cid}")
+
+    if show_create:
+        kb.button(text="Создать персонажа", callback_data=create_cb)
+
+    if show_menu:
+        kb.button(text=menu_text, callback_data=menu_cb)
+
     kb.adjust(1)
     return kb.as_markup()
 
@@ -58,8 +77,6 @@ def char_detail_kb(character_id: int) -> InlineKeyboardMarkup:
     kb.button(text="Физическое состояние", callback_data=f"char:phys:{character_id}")
     kb.button(text="Снаряжение", callback_data=f"char:eq:{character_id}")
     kb.button(text="Тир", callback_data=f"range:open:{character_id}")
-    kb.button(text="Склад", callback_data=f"char:stash:{character_id}")
-    kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(2)
     return kb.as_markup()
@@ -68,7 +85,6 @@ def char_detail_kb(character_id: int) -> InlineKeyboardMarkup:
 def char_physical_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
-    kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(1)
     return kb.as_markup()
@@ -80,7 +96,6 @@ def char_equipment_kb(character_id: int) -> InlineKeyboardMarkup:
     kb.button(text="Улучшить оружие", callback_data=f"wup:open:{character_id}")
     kb.button(text="Тест: бой", callback_data=f"clash:test:{character_id}")
     kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
-    kb.button(text="Назад к списку", callback_data="chars:pick")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(1)
     return kb.as_markup()
@@ -107,8 +122,7 @@ def clash_result_kb(character_id: int, enemy_key: str) -> InlineKeyboardMarkup:
 
 def char_stash_kb(character_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="Назад к персонажу", callback_data=f"chars:open:{character_id}")
-    kb.button(text="Назад к списку", callback_data="chars:pick")
+    kb.button(text="К персонажу", callback_data=f"chars:open:{character_id}")
     kb.button(text="Меню", callback_data="menu:back")
     kb.adjust(2)
     return kb.as_markup()

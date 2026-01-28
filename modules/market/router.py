@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape as html_escape
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -9,7 +11,12 @@ from modules.common.tg import safe_edit
 from modules.start.keyboards import chars_pick_kb
 from modules.start.service import StartService
 
-from .keyboards import market_kb, market_details_kb, market_sell_cancel_kb
+from .keyboards import (
+    market_kb,
+    market_details_kb,
+    market_sell_cancel_kb,
+    market_withdraw_cancel_kb,
+)
 from .service import MarketService, MarketError
 from .states import MarketStates
 
@@ -210,6 +217,84 @@ async def _sell_show_inventory(call: CallbackQuery, db_session: AsyncSession, st
     await safe_edit(call, text_out, reply_markup=market_sell_cancel_kb())
 
 
+@router.callback_query(F.data == "market:withdraw")
+async def market_withdraw(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    ss = StartService(db_session)
+    await ss.ensure_user(call.from_user.id)
+    chars = await ss.list_characters(call.from_user.id)
+
+    data = await state.get_data()
+    market_page = int(data.get("market_page") or 0)
+
+    await state.update_data(
+        market_page=market_page,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+    )
+
+    if not chars:
+        await safe_edit(call, "Нет персонажей.", reply_markup=market_withdraw_cancel_kb())
+        await call.answer()
+        return
+
+    if len(chars) == 1:
+        cid = int(chars[0]["id"])
+        await _withdraw_show_listings(call, db_session, state, character_id=cid)
+        await call.answer()
+        return
+
+    text_out = "<b>Снять с продажи</b>\nВыбери персонажа."
+    kb = chars_pick_kb(
+        chars,
+        item_cb_prefix="market:withdraw:char",
+        show_create=False,
+        show_menu=True,
+        menu_cb="market:withdraw:cancel",
+        menu_text="Отмена",
+    )
+    await safe_edit(call, text_out, reply_markup=kb)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("market:withdraw:char:"))
+async def market_withdraw_pick_char(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    try:
+        cid = int((call.data or "").split(":")[-1])
+    except Exception:
+        cid = 0
+    if cid <= 0:
+        await call.answer()
+        return
+
+    await _withdraw_show_listings(call, db_session, state, character_id=cid)
+    await call.answer()
+
+
+@router.callback_query(F.data == "market:withdraw:cancel")
+async def market_withdraw_cancel(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    data = await state.get_data()
+    page = int(data.get("market_page") or 0)
+    await _render_market(call, db_session, state, page=page)
+    await call.answer()
+
+
+async def _withdraw_show_listings(call: CallbackQuery, db_session: AsyncSession, state: FSMContext, *, character_id: int) -> None:
+    svc = MarketService(db_session)
+    text_out, listings = await svc.withdrawable_listings_text(call.from_user.id, character_id, limit=30, offset=0)
+
+    listing_ids = [int(x.id) for x in listings]
+
+    await state.set_state(MarketStates.withdraw_choose_listing)
+    await state.update_data(
+        withdraw_character_id=int(character_id),
+        withdraw_listing_ids=listing_ids,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+    )
+
+    await safe_edit(call, text_out, reply_markup=market_withdraw_cancel_kb())
+
+
 @router.message(MarketStates.waiting_listing_id)
 async def market_details_from_chat(message: Message, db_session: AsyncSession, state: FSMContext):
     data = await state.get_data()
@@ -256,6 +341,60 @@ async def market_details_from_chat(message: Message, db_session: AsyncSession, s
     await message.answer(text_out, reply_markup=market_details_kb(page=page), parse_mode="HTML")
 
 
+@router.message(MarketStates.withdraw_choose_listing)
+async def market_withdraw_choose_listing(message: Message, db_session: AsyncSession, state: FSMContext):
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id") or message.chat.id)
+    message_id = int(data.get("message_id") or 0)
+    character_id = int(data.get("withdraw_character_id") or 0)
+    listing_ids = list(data.get("withdraw_listing_ids") or [])
+    market_page = int(data.get("market_page") or 0)
+
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("Нужен номер строки (№) из таблицы.")
+        return
+
+    n = int(raw)
+    if n < 1 or n > len(listing_ids):
+        await message.answer(f"Номер строки должен быть 1–{len(listing_ids)}.")
+        return
+
+    listing_id = int(listing_ids[n - 1])
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    svc = MarketService(db_session)
+    try:
+        res = await svc.withdraw_listing_to_character(
+            tg_id=message.from_user.id,
+            character_id=character_id,
+            listing_id=listing_id,
+        )
+    except MarketError as e:
+        await message.answer(str(e))
+        return
+
+    notice = f"Снято с продажи: {html_escape(res.item_name)} ×{res.qty} – лот #{res.listing_id}"
+
+    if message_id > 0:
+        await _render_market_from_message(
+            message,
+            db_session,
+            state,
+            chat_id=chat_id,
+            message_id=message_id,
+            page=market_page,
+            notice=notice,
+        )
+        return
+
+    await message.answer(notice, parse_mode="HTML")
+
+
 @router.message(MarketStates.sell_choose_item)
 async def market_sell_choose_item(message: Message, db_session: AsyncSession, state: FSMContext):
     data = await state.get_data()
@@ -288,7 +427,7 @@ async def market_sell_choose_item(message: Message, db_session: AsyncSession, st
     if max_qty > 1:
         text_out = (
             "<b>Выставить на рынок</b>\n"
-            f"Предмет: {_esc(name)}\n"
+            f"Предмет: {html_escape(name)}\n"
             f"Доступно: {max_qty}\n"
             "Напиши количество."
         )
@@ -313,7 +452,7 @@ async def market_sell_choose_item(message: Message, db_session: AsyncSession, st
 
     text_out = (
         "<b>Выставить на рынок</b>\n"
-        f"Предмет: {_esc(name)}\n"
+        f"Предмет: {html_escape(name)}\n"
         "Напиши цену."
     )
     await state.set_state(MarketStates.sell_choose_price)
@@ -361,7 +500,7 @@ async def market_sell_choose_qty(message: Message, db_session: AsyncSession, sta
 
     text_out = (
         "<b>Выставить на рынок</b>\n"
-        f"Предмет: {_esc(name)}\n"
+        f"Предмет: {html_escape(name)}\n"
         f"Количество: {qty}\n"
         "Напиши цену."
     )
@@ -417,7 +556,7 @@ async def market_sell_choose_price(message: Message, db_session: AsyncSession, s
         await message.answer(str(e))
         return
 
-    notice = f"Выставлено: {_esc(name)} ×{qty} – {price} монет – лот #{listing_id}"
+    notice = f"Выставлено: {html_escape(name)} ×{qty} – {price} монет – лот #{listing_id}"
 
     if message_id > 0:
         await _render_market_from_message(

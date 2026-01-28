@@ -57,6 +57,36 @@ def _cell(v: Any, width: int, *, align: str = "left") -> str:
     return _esc(raw)
 
 
+def _signed(v: Any, *, decimals: int = 1) -> str:
+    try:
+        n = float(v or 0)
+    except Exception:
+        n = 0.0
+
+    if abs(n) < 1e-12:
+        return "0"
+
+    if abs(n - int(n)) < 1e-12:
+        return f"{int(n):+d}"
+
+    s = f"{n:+.{int(decimals)}f}"
+    return s.rstrip("0").rstrip(".")
+
+
+def _is_zero_value(v: Any) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, (int, float)):
+        return abs(float(v)) < 1e-12
+    s = str(v).strip()
+    if not s:
+        return True
+    try:
+        return abs(float(s.replace(",", "."))) < 1e-12
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class MarketListingView:
     id: int
@@ -95,6 +125,24 @@ class SellInventoryItemView:
     item_id: int
     name: str
     item_type: str
+    qty: int
+
+
+@dataclass(frozen=True)
+class UserActiveListingView:
+    id: int
+    item_id: int
+    item_name: str
+    item_type: str
+    qty: int
+    price: int
+
+
+@dataclass(frozen=True)
+class WithdrawResult:
+    listing_id: int
+    item_id: int
+    item_name: str
     qty: int
 
 
@@ -211,7 +259,7 @@ class MarketService:
             page_size=page_size,
             total=total,
             max_page=max_page,
-            listings=listings,
+            listings=list(listings),
             has_prev=page > 0,
             has_next=page < max_page,
         )
@@ -371,28 +419,20 @@ class MarketService:
             except Exception:
                 return 0
 
-        def _f(v: Any) -> str:
-            try:
-                num = float(v or 0)
-            except Exception:
-                num = 0.0
-            if abs(num - int(num)) < 1e-9:
-                return str(int(num))
-            return f"{num:.1f}"
-
         rows = [
             ("Тир", str(r.get("tier") or "D")),
             ("Броня", _n(r.get("armor"))),
             ("Надёжность", _n(r.get("reliability"))),
-            ("Точность", f"{_n(r.get('accuracy_bonus')):+}"),
-            ("Реакция", f"{_f(r.get('reaction_bonus')):+}"),
-            ("Инициатива", f"{_f(r.get('initiative_bonus')):+}"),
-            ("Скрытность", f"{_f(r.get('stealth_bonus')):+}"),
-            ("Грузоподъём", f"{_f(r.get('carry_capacity_bonus')):+}"),
-            ("Анализ лута", f"{_n(r.get('loot_analysis_bonus')):+}"),
-            ("Обращение", f"{_n(r.get('item_handling_bonus')):+}"),
+            ("Точность", _signed(_n(r.get("accuracy_bonus")), decimals=0)),
+            ("Реакция", _signed(r.get("reaction_bonus"), decimals=1)),
+            ("Инициатива", _signed(r.get("initiative_bonus"), decimals=1)),
+            ("Скрытность", _signed(r.get("stealth_bonus"), decimals=1)),
+            ("Грузоподъём", _signed(r.get("carry_capacity_bonus"), decimals=1)),
+            ("Анализ лута", _signed(_n(r.get("loot_analysis_bonus")), decimals=0)),
+            ("Обращение", _signed(_n(r.get("item_handling_bonus")), decimals=0)),
         ]
 
+        rows = [(k, v) for (k, v) in rows if k == "Тир" or not _is_zero_value(v)]
         return self._kv_table(rows)
 
     async def _ammo_details(self, meta_json: dict[str, Any], item_id: int) -> tuple[str, str] | None:
@@ -643,7 +683,14 @@ class MarketService:
         blocks.append(self._selected_item_block(l))
         return "\n".join(blocks).rstrip()
 
-    async def sellable_inventory(self, tg_id: int, character_id: int, *, limit: int = 30, offset: int = 0) -> tuple[str, list[SellInventoryItemView]]:
+    async def sellable_inventory(
+        self,
+        tg_id: int,
+        character_id: int,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> tuple[str, list[SellInventoryItemView]]:
         ch = await self._get_character_owned(tg_id, character_id)
 
         total = (
@@ -859,3 +906,184 @@ class MarketService:
 
         await self._s.commit()
         return int(row[0])
+
+    async def withdrawable_listings_text(
+        self,
+        tg_id: int,
+        character_id: int,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> tuple[str, list[UserActiveListingView]]:
+        uid = await self._ensure_user_id(tg_id)
+        ch = await self._get_character_owned(tg_id, character_id)
+
+        total_row = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM market_listings ml
+                    WHERE ml.seller_user_id = :uid AND ml.status = 'active'
+                    """
+                ),
+                {"uid": int(uid)},
+            )
+        ).first()
+        total_cnt = int((total_row[0] if total_row else 0) or 0)
+
+        rows = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT
+                        ml.id,
+                        ml.item_id,
+                        i.name,
+                        i.item_type,
+                        ml.qty,
+                        ml.price
+                    FROM market_listings ml
+                    JOIN items i ON i.id = ml.item_id
+                    WHERE ml.seller_user_id = :uid AND ml.status = 'active'
+                    ORDER BY ml.created_at DESC, ml.id DESC
+                    LIMIT :lim OFFSET :off
+                    """
+                ),
+                {"uid": int(uid), "lim": int(limit), "off": int(offset)},
+            )
+        ).all()
+
+        listings: list[UserActiveListingView] = []
+        for r in rows:
+            listings.append(
+                UserActiveListingView(
+                    id=int(r[0]),
+                    item_id=int(r[1]),
+                    item_name=str(r[2] or ""),
+                    item_type=str(r[3] or "misc"),
+                    qty=int(r[4] or 0),
+                    price=int(r[5] or 0),
+                )
+            )
+
+        title = f"<b>Снять с продажи</b> – {_esc(str(ch.get('name') or 'Персонаж'))}"
+        if total_cnt <= 0:
+            return title + "\nНет активных лотов.", listings
+
+        IDX_W = 2
+        ITEM_W = 32
+        QTY_W = 4
+        PRICE_W = 8
+        TYPE_W = 12
+
+        header = " | ".join(
+            [
+                _cell("№", IDX_W, align="right"),
+                _cell("Предмет", ITEM_W),
+                _cell("Кол", QTY_W, align="right"),
+                _cell("Цена", PRICE_W, align="right"),
+                _cell("Тип", TYPE_W),
+            ]
+        )
+        sep = "-+-".join(
+            [
+                "-" * IDX_W,
+                "-" * ITEM_W,
+                "-" * QTY_W,
+                "-" * PRICE_W,
+                "-" * TYPE_W,
+            ]
+        )
+
+        table_rows: list[str] = [header, sep]
+        for idx, l in enumerate(listings, start=1):
+            table_rows.append(
+                " | ".join(
+                    [
+                        _cell(idx, IDX_W, align="right"),
+                        _cell(l.item_name, ITEM_W),
+                        _cell(max(1, int(l.qty)), QTY_W, align="right"),
+                        _cell(max(0, int(l.price)), PRICE_W, align="right"),
+                        _cell(l.item_type, TYPE_W),
+                    ]
+                )
+            )
+
+        shown = min(len(listings), limit)
+        info = f"Доступно: {total_cnt} | Показано: {shown}"
+        hint = "Напиши № лота из таблицы, чтобы снять с продажи."
+
+        text_out = "\n".join(
+            [
+                title,
+                info,
+                "<pre>" + "\n".join(table_rows) + "</pre>",
+                hint,
+            ]
+        ).rstrip()
+
+        if len(text_out) > 3900:
+            text_out = "\n".join([title, info, hint]).rstrip()
+
+        return text_out, listings
+
+    async def withdraw_listing_to_character(
+        self,
+        tg_id: int,
+        character_id: int,
+        listing_id: int,
+    ) -> WithdrawResult:
+        uid = await self._ensure_user_id(tg_id)
+        await self._get_character_owned(tg_id, character_id)
+
+        row = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT ml.id, ml.item_id, i.name, ml.qty
+                    FROM market_listings ml
+                    JOIN items i ON i.id = ml.item_id
+                    WHERE ml.id = :lid AND ml.seller_user_id = :uid AND ml.status = 'active'
+                    FOR UPDATE
+                    """
+                ),
+                {"lid": int(listing_id), "uid": int(uid)},
+            )
+        ).first()
+
+        if not row:
+            raise MarketError("Лот не найден или уже снят.")
+
+        lid = int(row[0])
+        item_id = int(row[1])
+        name = str(row[2] or "Предмет")
+        qty = int(row[3] or 0)
+        if qty <= 0:
+            raise MarketError("Некорректное количество в лоте.")
+
+        await self._s.execute(
+            text(
+                """
+                UPDATE market_listings
+                SET status = 'canceled'
+                WHERE id = :lid
+                """
+            ),
+            {"lid": int(lid)},
+        )
+
+        await self._s.execute(
+            text(
+                """
+                INSERT INTO character_inventory (character_id, item_id, qty)
+                VALUES (:cid, :iid, :qty)
+                ON CONFLICT (character_id, item_id)
+                DO UPDATE SET qty = character_inventory.qty + EXCLUDED.qty
+                """
+            ),
+            {"cid": int(character_id), "iid": int(item_id), "qty": int(qty)},
+        )
+
+        await self._s.commit()
+        return WithdrawResult(listing_id=lid, item_id=item_id, item_name=name, qty=qty)

@@ -9,3 +9,5 @@ class MarketStates(StatesGroup):
     sell_choose_item = State()
     sell_choose_qty = State()
     sell_choose_price = State()
+
+    withdraw_choose_listing = State()

@@ -12,6 +12,7 @@ from modules.equip.router import router as equip_router
 from modules.range.router import router as range_router
 from modules.stash.router import router as stash_router
 from modules.market.router import router as market_router
+from modules.stars_weapon_market.router import router as stars_weapon_market_router
 from modules.start.router import router as start_router
 from modules.weapon_upgrades.router import router as weapon_upgrades_router
 from modules.fallback.router import router as fallback_router
@@ -34,11 +35,14 @@ async def run() -> None:
     dp.include_router(equip_router)
     dp.include_router(stash_router)
     dp.include_router(market_router)
+    dp.include_router(stars_weapon_market_router)
     dp.include_router(range_router)
     dp.include_router(weapon_upgrades_router)
     dp.include_router(start_router)
     dp.include_router(fallback_router)
-
+    bal = await bot.get_my_star_balance()
+    # bal.amount
+    print(bal)
     try:
         await dp.start_polling(
             bot,

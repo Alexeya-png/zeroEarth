@@ -15,14 +15,15 @@ def market_kb(*, page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMar
     for text, cb in nav_row:
         kb.button(text=text, callback_data=cb)
 
+    kb.button(text="⭐ Оружие за Stars", callback_data="wstars:open")
     kb.button(text="Выставить", callback_data="market:sell")
     kb.button(text="Снять с продажи", callback_data="market:withdraw")
     kb.button(text="Меню", callback_data="menu:back")
 
     if nav_row:
-        kb.adjust(len(nav_row), 2, 1)
+        kb.adjust(len(nav_row), 1, 2, 1)
     else:
-        kb.adjust(2, 1)
+        kb.adjust(1, 2, 1)
 
     return kb.as_markup()
 

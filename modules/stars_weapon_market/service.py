@@ -193,25 +193,32 @@ class StarsWeaponMarketService:
             await self._s.rollback()
             return
 
-    async def active_count(self) -> int:
-        r = (
-            await self._s.execute(
-                text(
-                    """
-                    SELECT COUNT(*) AS cnt
-                    FROM stars_weapon_listings
-                    WHERE status = 'active'
-                    """
-                )
+    async def active_count(self, *, exclude_user_id: int | None = None) -> int:
+        if exclude_user_id is None:
+            stmt = text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM stars_weapon_listings
+                WHERE status = 'active'
+                """
             )
-        ).mappings().first()
+            params: dict[str, Any] = {}
+        else:
+            stmt = text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM stars_weapon_listings
+                WHERE status = 'active'
+                  AND seller_user_id <> :uid
+                """
+            )
+            params = {"uid": int(exclude_user_id)}
+
+        r = (await self._s.execute(stmt, params)).mappings().first()
         return int((r or {}).get("cnt") or 0)
 
-    async def list_active(self, limit: int, offset: int) -> list[ListingView]:
-        rows = (
-            await self._s.execute(
-                text(
-                    """
+    async def list_active(self, *, limit: int, offset: int, exclude_user_id: int | None = None) -> list[ListingView]:
+        sql = """
                     SELECT
                       l.id,
                       l.price_stars,
@@ -222,13 +229,21 @@ class StarsWeaponMarketService:
                     FROM stars_weapon_listings l
                     JOIN weapons w ON w.id = l.weapon_id
                     WHERE l.status = 'active'
+        """
+        params: dict[str, Any] = {
+            "lim": int(limit),
+            "off": int(offset),
+        }
+        if exclude_user_id is not None:
+            sql += "\n                      AND l.seller_user_id <> :uid"
+            params["uid"] = int(exclude_user_id)
+
+        sql += """
                     ORDER BY l.created_at DESC, l.id DESC
                     LIMIT :lim OFFSET :off
                     """
-                ),
-                {"lim": int(limit), "off": int(offset)},
-            )
-        ).mappings().all()
+
+        rows = (await self._s.execute(text(sql), params)).mappings().all()
 
         out: list[ListingView] = []
         for r in rows:
@@ -244,10 +259,10 @@ class StarsWeaponMarketService:
             )
         return out
 
-    async def get_page(self, page: int, page_size: int) -> MarketPage:
+    async def get_page(self, *, page: int, page_size: int, exclude_user_id: int | None = None) -> MarketPage:
         await self.release_expired_reservations()
 
-        total = await self.active_count()
+        total = await self.active_count(exclude_user_id=exclude_user_id)
         if page_size <= 0:
             page_size = 20
 
@@ -260,7 +275,7 @@ class StarsWeaponMarketService:
             page = max_page
 
         offset = page * page_size
-        listings = await self.list_active(limit=page_size, offset=offset)
+        listings = await self.list_active(limit=page_size, offset=offset, exclude_user_id=exclude_user_id)
 
         return MarketPage(
             page=page,
@@ -321,8 +336,8 @@ class StarsWeaponMarketService:
 
         return "<pre>" + "\n".join(rows) + "</pre>"
 
-    async def market_text(self, *, page: int, page_size: int) -> tuple[str, MarketPage]:
-        mp = await self.get_page(page=page, page_size=page_size)
+    async def market_text(self, *, page: int, page_size: int, exclude_user_id: int | None = None) -> tuple[str, MarketPage]:
+        mp = await self.get_page(page=page, page_size=page_size, exclude_user_id=exclude_user_id)
 
         page_label = f"{mp.page + 1}/{mp.max_page + 1}" if (mp.total > 0) else "1/1"
         parts = [

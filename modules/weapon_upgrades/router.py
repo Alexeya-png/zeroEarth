@@ -3,6 +3,7 @@ from __future__ import annotations
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.common.tg import safe_edit
@@ -15,6 +16,34 @@ from .states import WeaponUpgradeStates
 
 router = Router()
 
+
+
+async def _deny_if_in_active_raid_tg(tg_id: int, session: AsyncSession, character_id: int) -> bool:
+    row = (
+        await session.execute(
+            text(
+                """
+                SELECT 1
+                FROM raids r
+                JOIN characters c ON c.id = r.character_id
+                JOIN users u ON u.id = c.user_id
+                WHERE u.tg_id = :tg
+                  AND c.id = :cid
+                  AND r.status = 'active'
+                LIMIT 1
+                """
+            ),
+            {"tg": int(tg_id), "cid": int(character_id)},
+        )
+    ).first()
+    return bool(row)
+
+
+async def _deny_if_in_active_raid_call(call: CallbackQuery, session: AsyncSession, character_id: int) -> bool:
+    if await _deny_if_in_active_raid_tg(int(call.from_user.id), session, int(character_id)):
+        await call.answer("Персонаж в рейде. Действия недоступны.", show_alert=True)
+        return True
+    return False
 
 def _bonus_int(total_bonus: dict | None, key: str) -> int:
     if not total_bonus:
@@ -67,18 +96,22 @@ async def _compose_slot_lines(svc: WeaponUpgradeService, character_id: int, slot
         bonus_line = f"ACC {acc_b:+} REL {rel_b:+} DMG {dmg_b:+} PEN {pen_b:+}"
 
     mod_lines: list[str] = []
+    shown_any = False
     if inv_mods:
         for m in inv_mods:
-            compatible = m.is_compatible(weapon.category, base_id)
-            blocked = m.mod_type in installed_types
-            mark = "OK" if compatible and not blocked else "NO"
-            extra = "" if not blocked else " уже установлен тип"
+            if not m.is_compatible(weapon.category, base_id):
+                continue
+            if m.mod_type in installed_types:
+                continue
+
+            shown_any = True
             mod_lines.append(
-                f"{mark} ID {m.item_id} ×{m.qty} – {m.name} | {m.mod_type}/{m.tier} | "
-                f"ACC {m.accuracy_bonus:+} REL {m.reliability_bonus:+} DMG {m.damage_bonus:+} PEN {m.armor_pen_bonus:+}{extra}"
+                f"ID {m.item_id} ×{m.qty} – {m.name} | {m.mod_type}/{m.tier} | "
+                f"ACC {m.accuracy_bonus:+} REL {m.reliability_bonus:+} DMG {m.damage_bonus:+} PEN {m.armor_pen_bonus:+}"
             )
-    else:
-        mod_lines.append("- нет модификаций в инвентаре")
+
+    if not shown_any:
+        mod_lines.append("- нет подходящих модификаций в инвентаре")
 
     weapon_lines = [
         f"Улучшение оружия – слот {slot}",
@@ -154,25 +187,38 @@ async def _render_slot(call: CallbackQuery, db_session: AsyncSession, state: FSM
 async def wup_open(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
     await state.clear()
     character_id = int(call.data.split(":")[2])
+    if await _deny_if_in_active_raid_call(call, db_session, character_id):
+        return
     await _render_pick(call, db_session, character_id)
 
 
 @router.callback_query(F.data.startswith("wup:slot:"))
 async def wup_slot(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
     _, _, character_id_s, slot_s = call.data.split(":", 3)
-    await _render_slot(call, db_session, state, int(character_id_s), int(slot_s))
+    character_id = int(character_id_s)
+    if await _deny_if_in_active_raid_call(call, db_session, character_id):
+        return
+    await _render_slot(call, db_session, state, character_id, int(slot_s))
 
 
 @router.callback_query(F.data.startswith("wup:cancel:"))
 async def wup_cancel(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
     _, _, character_id_s, slot_s = call.data.split(":", 3)
-    await _render_slot(call, db_session, state, int(character_id_s), int(slot_s))
+    character_id = int(character_id_s)
+    if await _deny_if_in_active_raid_call(call, db_session, character_id):
+        return
+    await _render_slot(call, db_session, state, character_id, int(slot_s))
 
 
 @router.message(WeaponUpgradeStates.waiting_mod_item_id)
 async def wup_apply_from_chat(message: Message, db_session: AsyncSession, state: FSMContext):
     data = await state.get_data()
     character_id = int(data["character_id"])
+    if await _deny_if_in_active_raid_tg(int(message.from_user.id), db_session, character_id):
+        await state.clear()
+        await message.answer("Персонаж в рейде. Улучшение оружия недоступно.")
+        return
+
     slot = int(data["slot"])
     expected_weapon_id = int(data["weapon_id"])
     chat_id = int(data["chat_id"])

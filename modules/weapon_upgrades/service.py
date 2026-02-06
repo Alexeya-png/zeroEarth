@@ -89,6 +89,60 @@ class WeaponUpgradeService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def _ensure_not_in_active_raid(self, character_id: int) -> None:
+        row = (
+            await self.session.execute(
+                text("SELECT 1 FROM raids WHERE character_id = :cid AND status = 'active' LIMIT 1"),
+                {"cid": int(character_id)},
+            )
+        ).first()
+        if row:
+            raise ValueError("Персонаж в рейде. Улучшение оружия недоступно")
+
+
+    async def _get_inventory_qty(self, character_id: int, item_id: int) -> int:
+        r = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT qty
+                    FROM character_inventory
+                    WHERE character_id = :cid AND item_id = :iid
+                    """
+                ),
+                {"cid": character_id, "iid": item_id},
+            )
+        ).mappings().first()
+        if not r or r.get("qty") is None:
+            return 0
+        try:
+            return int(r["qty"])
+        except Exception:
+            return 0
+
+    async def _dec_inventory(self, character_id: int, item_id: int, dec: int) -> None:
+        if dec <= 0:
+            return
+        await self.session.execute(
+            text(
+                """
+                UPDATE character_inventory
+                SET qty = GREATEST(qty - :dec, 0)
+                WHERE character_id = :cid AND item_id = :iid
+                """
+            ),
+            {"cid": character_id, "iid": item_id, "dec": int(dec)},
+        )
+        await self.session.execute(
+            text(
+                """
+                DELETE FROM character_inventory
+                WHERE character_id = :cid AND item_id = :iid AND qty <= 0
+                """
+            ),
+            {"cid": character_id, "iid": item_id},
+        )
+
     async def get_weapon_id_in_slot(self, character_id: int, slot: int) -> Optional[int]:
         if slot not in (1, 2, 3):
             return None
@@ -383,10 +437,10 @@ class WeaponUpgradeService:
         return {"D": 1, "C": 2, "B": 3, "A": 4, "S": 5}.get((tier or "").upper(), 0)
 
     def _generate_unique_weapon_name(
-        self,
-        base_name: str,
-        mods: list[dict[str, Any]],
-        last_mod_name: str | None = None,
+            self,
+            base_name: str,
+            mods: list[dict[str, Any]],
+            last_mod_name: str | None = None,
     ) -> str:
         mods_sorted = sorted(mods, key=lambda m: self._MODTYPE_PRIORITY.get(str(m.get("mod_type")), 999))
         n = len(mods_sorted)
@@ -397,8 +451,7 @@ class WeaponUpgradeService:
         if n == 1:
             mt = str(mods_sorted[0].get("mod_type"))
             label = self._MODTYPE_LABEL.get(mt, mt)
-            name = str(mods_sorted[0].get("name", "")) or ""
-            res = f"{base_name} с {label} – {name}" if name else f"{base_name} с {label}"
+            res = f"{base_name} с {label}"
             return res[:128]
 
         if max_tier >= 5 and n >= 2:
@@ -414,15 +467,7 @@ class WeaponUpgradeService:
         else:
             prefix = "Экспериментальный"
 
-        shorts = [self._MODTYPE_SHORT.get(str(m.get("mod_type")), str(m.get("mod_type"))) for m in mods_sorted]
-        shown = shorts[:3]
-        more = n - len(shown)
-        mods_part = ", ".join(shown) + (f" +{more}" if more > 0 else "")
-
-        if last_mod_name:
-            res = f"{prefix} {base_name} – {mods_part} – {last_mod_name}"
-        else:
-            res = f"{prefix} {base_name} – {mods_part}"
+        res = f"{prefix} {base_name}"
         return res[:128]
 
     async def apply_mod(
@@ -434,6 +479,8 @@ class WeaponUpgradeService:
     ) -> WeaponRow:
         if slot not in (1, 2, 3):
             raise ValueError("Неверный слот")
+
+        await self._ensure_not_in_active_raid(character_id)
 
         key = f"weapon_{slot}_id"
         eq = (
@@ -450,6 +497,8 @@ class WeaponUpgradeService:
         if current_weapon_id != expected_weapon_id:
             raise ValueError("Оружие в слоте изменилось. Открой улучшение заново")
 
+        qty_before_current = await self._get_inventory_qty(character_id, current_weapon_id)
+
         weapon = await self.get_weapon(current_weapon_id)
         if not weapon:
             raise ValueError("Оружие не найдено")
@@ -463,6 +512,10 @@ class WeaponUpgradeService:
             "damage_bonus": 0,
             "armor_pen_bonus": 0,
         }
+
+        qty_before_base = 0
+        if base_weapon_id != current_weapon_id:
+            qty_before_base = await self._get_inventory_qty(character_id, base_weapon_id)
 
         mod = await self._get_mod_in_inventory(character_id, mod_item_id)
         if not mod:
@@ -503,23 +556,29 @@ class WeaponUpgradeService:
             await self.session.execute(
                 text(
                     """
-                    INSERT INTO weapons (
-                      name, category, caliber_id, accuracy, reliability,
-                      weight_kg, price, quality_score, quality_tier, meta_json
+                    INSERT INTO items (
+                      item_type, name, meta_json,
+                      accuracy, reliability,
+                      weight, weight_kg, price,
+                      caliber_id, category,
+                      quality_score, quality_tier, loot_type
                     )
                     SELECT
+                      'weapon',
                       :name,
-                      w.category,
-                      w.caliber_id,
+                      CAST(:meta AS jsonb),
                       :acc,
                       :rel,
                       :weight,
+                      :weight,
                       :price,
-                      w.quality_score,
-                      w.quality_tier,
-                      CAST(:meta AS jsonb)
-                    FROM weapons w
-                    WHERE w.id = :src_id
+                      i.caliber_id,
+                      i.category,
+                      i.quality_score,
+                      i.quality_tier,
+                      i.loot_type
+                    FROM items i
+                    WHERE i.id = :src_id
                     RETURNING id
                     """
                 ),
@@ -567,25 +626,19 @@ class WeaponUpgradeService:
             {"wid": new_weapon_id, "cid": character_id},
         )
 
-        await self.session.execute(
-            text(
-                """
-                UPDATE character_inventory
-                SET qty = qty - 1
-                WHERE character_id = :cid AND item_id = :iid
-                """
-            ),
-            {"cid": character_id, "iid": mod_item_id},
-        )
-        await self.session.execute(
-            text(
-                """
-                DELETE FROM character_inventory
-                WHERE character_id = :cid AND item_id = :iid AND qty <= 0
-                """
-            ),
-            {"cid": character_id, "iid": mod_item_id},
-        )
+        # 1 – старое оружие должно быть потрачено
+        # 2 – если при смене экипировки где-то добавилась лишняя копия, лишнее удаляем
+        qty_after_current = await self._get_inventory_qty(character_id, current_weapon_id)
+        target_current = max(qty_before_current - 1, 0)
+        if qty_after_current > target_current:
+            await self._dec_inventory(character_id, current_weapon_id, qty_after_current - target_current)
+
+        if base_weapon_id != current_weapon_id:
+            qty_after_base = await self._get_inventory_qty(character_id, base_weapon_id)
+            if qty_after_base > qty_before_base:
+                await self._dec_inventory(character_id, base_weapon_id, qty_after_base - qty_before_base)
+
+        await self._dec_inventory(character_id, mod_item_id, 1)
 
         new_weapon = await self.get_weapon(new_weapon_id)
         if not new_weapon:

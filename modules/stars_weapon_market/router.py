@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, PreCheckoutQuery, LabeledPrice
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +26,8 @@ router = Router()
 
 PAGE_SIZE = 20
 
+_PAYMENT_MSG_MAP: dict[str, dict[str, int]] = {}
+
 
 def _parse_int(s: str | None) -> int | None:
     if not s:
@@ -36,16 +41,68 @@ def _parse_int(s: str | None) -> int | None:
         return None
 
 
+async def _delete_after(message: Message, delay: float = 2.0) -> None:
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        return
+    except Exception:
+        return
+
+
+async def _delete_by_id_after(bot, chat_id: int, message_id: int, delay: float = 2.0) -> None:
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramBadRequest:
+        return
+    except Exception:
+        return
+
+
+async def _forget_payload(payload: str, delay: float = 3600.0) -> None:
+    await asyncio.sleep(delay)
+    _PAYMENT_MSG_MAP.pop(payload, None)
+
+
+async def _answer_temp(message: Message, text: str, delay: float = 4.0):
+    msg = await message.answer(text)
+    asyncio.create_task(_delete_after(msg, delay))
+    return msg
+
+
 async def _render_market(call: CallbackQuery, db: AsyncSession, state: FSMContext, page: int) -> None:
+    user = await StartService(db).ensure_user(call.from_user.id)
     svc = StarsWeaponMarketService(db)
-    text_out, mp = await svc.market_text(page=page, page_size=PAGE_SIZE)
+    text_out, mp = await svc.market_text(page=page, page_size=PAGE_SIZE, exclude_user_id=int(user.id))
+
     await state.set_state(StarsWeaponMarketStates.waiting_listing_id)
     await state.update_data(page=int(mp.page), listing_ids=[int(x.id) for x in mp.listings])
+
+    if call.message:
+        await state.update_data(market_message_id=int(call.message.message_id))
+
     await safe_edit(
         call,
         text_out,
         reply_markup=stars_weapon_market_kb(page=mp.page, has_prev=mp.has_prev, has_next=mp.has_next),
     )
+
+
+async def _render_market_message(message: Message, db: AsyncSession, state: FSMContext, page: int) -> None:
+    user = await StartService(db).ensure_user(message.from_user.id)
+    svc = StarsWeaponMarketService(db)
+    text_out, mp = await svc.market_text(page=page, page_size=PAGE_SIZE, exclude_user_id=int(user.id))
+
+    await state.set_state(StarsWeaponMarketStates.waiting_listing_id)
+    await state.update_data(page=int(mp.page), listing_ids=[int(x.id) for x in mp.listings])
+
+    m = await message.answer(
+        text_out,
+        reply_markup=stars_weapon_market_kb(page=mp.page, has_prev=mp.has_prev, has_next=mp.has_next),
+    )
+    await state.update_data(market_message_id=int(m.message_id))
 
 
 @router.callback_query(F.data == "wstars:open")
@@ -75,14 +132,18 @@ async def wstars_pick_listing(message: Message, db_session: AsyncSession, state:
     data = await state.get_data()
     listing_ids = list(data.get("listing_ids") or [])
     page = int(data.get("page") or 0)
+    market_mid = data.get("market_message_id")
 
     n = _parse_int(message.text)
+    if n is not None:
+        asyncio.create_task(_delete_after(message, 2.0))
+
     if n is None:
         await message.answer("Нужен номер лота.")
         return
 
     if n <= 0 or n > len(listing_ids):
-        await message.answer("Нет такого номера на этой странице.")
+        await _answer_temp(message, "Нет такого номера на этой странице.", 4.0)
         return
 
     listing_id = int(listing_ids[n - 1])
@@ -95,16 +156,23 @@ async def wstars_pick_listing(message: Message, db_session: AsyncSession, state:
 
     can_buy = (d.seller_tg_id != int(message.from_user.id))
     text_out = svc.listing_details_text(d)
+    kb = stars_weapon_details_kb(page=page, listing_id=listing_id, can_buy=can_buy, price_stars=d.price_stars)
 
-    await message.answer(
-        text_out,
-        reply_markup=stars_weapon_details_kb(
-            page=page,
-            listing_id=listing_id,
-            can_buy=can_buy,
-            price_stars=d.price_stars,
-        ),
-    )
+    if market_mid is not None:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=int(market_mid),
+                text=text_out,
+                reply_markup=kb,
+            )
+            return
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            pass
+
+    await message.answer(text_out, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("wstars:details:"))
@@ -181,8 +249,12 @@ async def wstars_sell_pick_character(call: CallbackQuery, db_session: AsyncSessi
 
     await state.set_state(StarsWeaponMarketStates.sell_choose_weapon)
     await state.update_data(character_id=int(character_id), weapon_ids=[int(w.weapon_id) for w in weapons])
+    if call.message:
+        await state.update_data(sell_pick_message_id=int(call.message.message_id))
 
-    text_out = "<b>Выставить оружие</b>\nВыбери номер оружия и отправь в чат.\n\n" + svc.render_sellable_weapons_table(weapons)
+    text_out = "<b>Выставить оружие</b>\nВыбери номер оружия и отправь в чат.\n\n" + svc.render_sellable_weapons_table(
+        weapons
+    )
     await safe_edit(call, text_out, reply_markup=cancel_to_market_kb())
     await call.answer()
 
@@ -191,21 +263,33 @@ async def wstars_sell_pick_character(call: CallbackQuery, db_session: AsyncSessi
 async def wstars_sell_choose_weapon(message: Message, db_session: AsyncSession, state: FSMContext):
     data = await state.get_data()
     weapon_ids = list(data.get("weapon_ids") or [])
-    character_id = int(data.get("character_id") or 0)
 
     n = _parse_int(message.text)
+    if n is not None:
+        asyncio.create_task(_delete_after(message, 2.0))
+
     if n is None:
         await message.answer("Нужен номер оружия.")
         return
     if n <= 0 or n > len(weapon_ids):
-        await message.answer("Нет такого номера.")
+        await _answer_temp(message, "Нет такого номера.", 4.0)
         return
+
+    pick_mid = data.get("sell_pick_message_id")
+    if pick_mid is not None:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=int(pick_mid))
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            pass
 
     weapon_id = int(weapon_ids[n - 1])
     await state.update_data(weapon_id=weapon_id)
     await state.set_state(StarsWeaponMarketStates.sell_choose_price)
 
-    await message.answer("Введи цену в Stars (целое число).")
+    prompt = await message.answer("Введи цену в Stars (целое число).")
+    asyncio.create_task(_delete_after(prompt, 4.0))
 
 
 @router.message(StarsWeaponMarketStates.sell_choose_price)
@@ -215,6 +299,9 @@ async def wstars_sell_choose_price(message: Message, db_session: AsyncSession, s
     weapon_id = int(data.get("weapon_id") or 0)
 
     price = _parse_int(message.text)
+    if price is not None:
+        asyncio.create_task(_delete_after(message, 2.0))
+
     if price is None or price <= 0:
         await message.answer("Цена должна быть целым числом больше 0.")
         return
@@ -227,7 +314,7 @@ async def wstars_sell_choose_price(message: Message, db_session: AsyncSession, s
         return
 
     await state.clear()
-    await message.answer("Лот создан. Открой рынок: Рынок → ⭐ Оружие за Stars")
+    await _render_market_message(message, db_session, state, page=0)
 
 
 @router.callback_query(F.data == "wstars:withdraw")
@@ -239,6 +326,8 @@ async def wstars_withdraw_start(call: CallbackQuery, db_session: AsyncSession, s
 
     await state.set_state(StarsWeaponMarketStates.withdraw_choose_listing)
     await state.update_data(withdraw_ids=[int(x.id) for x in listings])
+    if call.message:
+        await state.update_data(withdraw_pick_message_id=int(call.message.message_id))
 
     text_out = "<b>Снять с продажи</b>\nВыбери номер лота и отправь в чат.\n\n" + svc.render_user_listings_table(listings)
     await safe_edit(call, text_out, reply_markup=cancel_to_market_kb())
@@ -251,12 +340,24 @@ async def wstars_withdraw_choose_listing(message: Message, db_session: AsyncSess
     ids_ = list(data.get("withdraw_ids") or [])
 
     n = _parse_int(message.text)
+    if n is not None:
+        asyncio.create_task(_delete_after(message, 2.0))
+
     if n is None:
         await message.answer("Нужен номер лота.")
         return
     if n <= 0 or n > len(ids_):
-        await message.answer("Нет такого номера.")
+        await _answer_temp(message, "Нет такого номера.", 4.0)
         return
+
+    pick_mid = data.get("withdraw_pick_message_id")
+    if pick_mid is not None:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=int(pick_mid))
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            pass
 
     listing_id = int(ids_[n - 1])
 
@@ -268,7 +369,9 @@ async def wstars_withdraw_choose_listing(message: Message, db_session: AsyncSess
         return
 
     await state.clear()
-    await message.answer("Лот снят. Оружие возвращено на склад.")
+    msg = await message.answer("Лот снят. Оружие возвращено на склад.")
+    asyncio.create_task(_delete_after(msg, 4.0))
+    await _render_market_message(message, db_session, state, page=0)
 
 
 @router.callback_query(F.data.startswith("wstars:buy:"))
@@ -337,7 +440,7 @@ async def _send_invoice(call: CallbackQuery, db_session: AsyncSession, listing_i
 
     prices = [LabeledPrice(label=weapon_name, amount=int(amount))]
 
-    await call.bot.send_invoice(
+    invoice_msg = await call.bot.send_invoice(
         chat_id=call.from_user.id,
         title=title,
         description=description,
@@ -347,7 +450,32 @@ async def _send_invoice(call: CallbackQuery, db_session: AsyncSession, listing_i
         prices=prices,
     )
 
-    await safe_edit(call, "Счёт отправлен.", reply_markup=stars_weapon_details_kb(page=page, listing_id=listing_id, can_buy=False, price_stars=amount))
+    store: dict[str, int] = {
+        "chat_id": int(call.from_user.id),
+        "invoice_message_id": int(invoice_msg.message_id),
+    }
+    if call.message:
+        store["details_message_id"] = int(call.message.message_id)
+
+    _PAYMENT_MSG_MAP[payload] = store
+    asyncio.create_task(_forget_payload(payload, 3600.0))
+
+    await safe_edit(
+        call,
+        "Счёт отправлен.",
+        reply_markup=stars_weapon_details_kb(page=page, listing_id=listing_id, can_buy=False, price_stars=amount),
+    )
+
+    if call.message:
+        asyncio.create_task(
+            _delete_by_id_after(
+                call.bot,
+                chat_id=int(call.from_user.id),
+                message_id=int(call.message.message_id),
+                delay=4.0,
+            )
+        )
+
     await call.answer()
 
 
@@ -387,4 +515,16 @@ async def wstars_successful_payment(message: Message, db_session: AsyncSession):
         await message.answer(str(e) or "Ошибка выдачи.")
         return
 
-    await message.answer(text_out)
+    out_msg = await message.answer(text_out)
+    asyncio.create_task(_delete_after(out_msg, 4.0))
+
+    cleanup = _PAYMENT_MSG_MAP.pop(payload, None)
+    if cleanup:
+        chat_id = int(cleanup.get("chat_id") or message.chat.id)
+        invoice_mid = cleanup.get("invoice_message_id")
+        details_mid = cleanup.get("details_message_id")
+
+        if invoice_mid:
+            asyncio.create_task(_delete_by_id_after(message.bot, chat_id=chat_id, message_id=int(invoice_mid), delay=4.0))
+        if details_mid:
+            asyncio.create_task(_delete_by_id_after(message.bot, chat_id=chat_id, message_id=int(details_mid), delay=4.0))

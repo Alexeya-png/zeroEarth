@@ -20,12 +20,13 @@ def stars_weapon_market_kb(*, page: int, has_prev: bool, has_next: bool) -> Inli
 
     kb.button(text="Выставить оружие", callback_data="wstars:sell")
     kb.button(text="Снять с продажи", callback_data="wstars:withdraw")
+    kb.button(text="Назад", callback_data="market:open")  # NEW
     kb.button(text="Меню", callback_data="menu:back")
 
     if nav_row:
-        kb.adjust(len(nav_row), 2, 1)
+        kb.adjust(len(nav_row), 2, 2)
     else:
-        kb.adjust(2, 1)
+        kb.adjust(2, 2)
 
     return kb.as_markup()
 

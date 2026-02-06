@@ -21,6 +21,11 @@ from modules.start.keyboards import (
 )
 from modules.start.states import CreateCharacterFlow
 
+from modules.market.service import MarketService
+from modules.market.keyboards import market_kb
+from modules.market.states import MarketStates
+
+MARKET_PAGE_SIZE = 30
 
 router = Router()
 
@@ -122,9 +127,39 @@ async def menu_stash(call: CallbackQuery, db_session: AsyncSession, state: FSMCo
 
 
 @router.callback_query(F.data == "menu:market")
-async def menu_market(call: CallbackQuery, state: FSMContext):
+async def menu_market(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
     await state.clear()
-    await safe_edit(call, "<b>Рынок</b>\nВ разработке.", reply_markup=main_menu_kb())
+    user = await StartService(db_session).ensure_user(call.from_user.id)
+
+    svc = MarketService(db_session)
+    base, mp = await svc.market_text(page=0, page_size=MARKET_PAGE_SIZE, exclude_user_id=int(user.id))
+
+    hint = "\n\nПодсказка: напиши № строки 1–30, чтобы увидеть детали.\nПример: <code>12</code>"
+    text_out = base + hint
+    if len(text_out) > 3900:
+        text_out = base + hint
+
+    page_listing_ids = [int(x.id) for x in mp.listings]
+
+    out = await call.message.answer(
+        text_out,
+        reply_markup=market_kb(page=mp.page, has_prev=mp.has_prev, has_next=mp.has_next),
+        disable_web_page_preview=True,
+    )
+
+    await state.set_state(MarketStates.waiting_listing_id)
+    await state.update_data(
+        chat_id=out.chat.id,
+        message_id=out.message_id,
+        market_page=int(mp.page),
+        market_page_listing_ids=page_listing_ids,
+    )
+
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
     await call.answer()
 
 

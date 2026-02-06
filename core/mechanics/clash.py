@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Literal
 
 from core.mechanics.shooting import calc_shooting_model, zone_probs, T_PART
@@ -58,6 +58,10 @@ class InjuryState:
         self.torso = min(3, self.torso + int(inj.get("torso", 0)))
         self.arm = min(3, self.arm + int(inj.get("arm", 0)))
         self.leg = min(3, self.leg + int(inj.get("leg", 0)))
+
+    @property
+    def total_severity(self) -> int:
+        return int(self.head) + int(self.torso) + int(self.arm) + int(self.leg)
 
 
 @dataclass
@@ -311,6 +315,33 @@ def _roll_initiative_round(c: CombatantState, weapon: WeaponSnapshot, rng: rando
     return d20, total
 
 
+
+def _apply_injury_effects(state: CombatantState) -> CombatantState:
+    inj = state.injuries
+
+    acc = int(state.accuracy) - (8 * int(inj.arm)) - (4 * int(inj.head))
+    if acc < 0:
+        acc = 0
+
+    reaction = float(state.reaction)
+    reaction *= max(0.0, 1.0 - 0.05 * float(inj.torso))
+    reaction *= max(0.0, 1.0 - 0.03 * float(inj.leg))
+
+    initiative = float(state.initiative)
+    initiative *= max(0.0, 1.0 - 0.05 * float(inj.head))
+    initiative *= max(0.0, 1.0 - 0.05 * float(inj.torso))
+    initiative *= max(0.0, 1.0 - 0.08 * float(inj.leg))
+
+    stealth = float(reaction) - (5.0 * float(inj.total_severity))
+
+    return replace(
+        state,
+        accuracy=acc,
+        reaction=reaction,
+        initiative=initiative,
+        stealth=stealth,
+    )
+
 def simulate_clash_round(
     a: CombatantState,
     b: CombatantState,
@@ -327,6 +358,8 @@ def simulate_clash_round(
 
     a_start = copy.deepcopy(a)
     b_start = copy.deepcopy(b)
+    a = _apply_injury_effects(a)
+    b = _apply_injury_effects(b)
     a_state = copy.deepcopy(a)
     b_state = copy.deepcopy(b)
 

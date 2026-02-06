@@ -239,7 +239,6 @@ class StartService:
         loadout = await (self._pick_free_loadout() if creation_type == "free" else self._pick_premium_loadout())
         await self._apply_loadout(cid, loadout)
 
-        # стартовые патроны как обычный предмет на складе
         try:
             await self._give_start_ammo(
                 character_id=cid,
@@ -247,7 +246,6 @@ class StartService:
                 creation_type=creation_type,
             )
         except Exception:
-            # патроны не должны ломать создание персонажа
             pass
 
         await self._s.execute(
@@ -324,6 +322,36 @@ class StartService:
         name = _esc(str(ch["name"] or "Без имени"))
         status = "жив" if ch["is_alive"] else "мертв"
 
+        raid_line = "Рейд – –"
+        r = (
+            await self._s.execute(
+                text(
+                    """
+                    SELECT rl.name AS location_name, r.phase
+                    FROM raids r
+                    LEFT JOIN raid_locations rl ON rl.id = r.location_id
+                    WHERE r.character_id = :cid AND r.status = 'active'
+                    ORDER BY r.started_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"cid": int(character_id)},
+            )
+        ).mappings().first()
+
+        if r:
+            loc_name = _esc(str(r.get("location_name") or ""))
+            phase = str(r.get("phase") or "")
+            phase_ru = {
+                "traveling": "переход",
+                "searching": "поиск",
+                "exiting": "выход",
+            }.get(phase, phase)
+            if loc_name:
+                raid_line = f"Рейд – {loc_name} – {phase_ru}"
+            else:
+                raid_line = f"Рейд – {phase_ru}"
+
         base_carry = _to_float(ch["carry_capacity"])
         base_reaction = _to_float(ch["reaction"])
         base_initiative = _to_float(ch["initiative"])
@@ -345,7 +373,7 @@ class StartService:
         accuracy_eff = base_accuracy + b_acc
         loot_eff = base_loot + b_loot
 
-        LABEL_W = 18  # ширина колонки названий, чтобы всё ровно стояло
+        LABEL_W = 18
 
         def row(label: str, value: str) -> str:
             return f"{label:<{LABEL_W}}: {value}"
@@ -378,6 +406,7 @@ class StartService:
                 f"Фракция – {ch['faction']}",
                 f"Создание – {ch['creation_type']}",
                 f"Статус – {status}",
+                raid_line,
                 "",
                 "<b>Базовые параметры</b>",
                 "<pre>"
@@ -789,12 +818,10 @@ class StartService:
             "hp": 100 + (endurance * 2),
             "carry_capacity": float(70 + (endurance * 2.5)),
             "load": 0.0,
-
             "reaction": float(10 + (0.5 * agility)),
             "accuracy": 15 + agility,
             "initiative": float(10 + (0.5 * agility)),
             "stealth": float(10 + (0.5 * agility)),
-
             "tech_training": int(10 * intelligence),
             "hacking": int(10 * intelligence),
             "loot_analysis": int(10 * intelligence),
@@ -932,16 +959,13 @@ class StartService:
         caliber_name = str(w.get("caliber_name") or caliber_code)
         category = str(w.get("category") or "")
 
-        # тип патронов по умолчанию
         bullet_type = "Buckshot" if caliber_code == "12ga" else "FMJ"
 
-        # количество патронов на старте
         if creation_type == "premium":
             qty = 80
         else:
             qty = 40
 
-        # небольшая корректировка под категории
         if category in ("lmg",):
             qty = max(qty, 120)
         elif category in ("smg",):

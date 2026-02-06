@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from io import BytesIO
 
 from PIL import Image, ImageDraw
 
@@ -18,9 +19,8 @@ class Injuries:
     arm: int
     leg: int
 
-
+ф
 def _project_root() -> Path:
-    # scripts/render_health_overlay.py -> project root
     return Path(__file__).resolve().parents[1]
 
 
@@ -146,16 +146,15 @@ def draw_injuries(base: Image.Image, injuries: Injuries) -> None:
         draw_x(d, cx, cy, size_by_lvl(int(lvl)), color)
 
 
-def render_health_overlay(
+def _render_health_overlay_image(
     *,
     inp: str,
-    out: str,
     max_hp: int,
     current_hp: int,
     injuries: Injuries,
     bg: Optional[str] = None,
     threshold: int = 120,
-) -> None:
+) -> Image.Image:
     max_hp_i = max(1, int(max_hp))
     current_hp_i = max(0, min(max_hp_i, int(current_hp)))
 
@@ -173,12 +172,54 @@ def render_health_overlay(
             bg_img = bg_img.resize(overlay.size, Image.Resampling.LANCZOS)
         out_img = bg_img.copy()
         out_img.alpha_composite(overlay)
-    else:
-        out_img = overlay
+        return out_img
 
+    return overlay
+
+
+def render_health_overlay_bytes(
+    *,
+    inp: str,
+    max_hp: int,
+    current_hp: int,
+    injuries: Injuries,
+    bg: Optional[str] = None,
+    threshold: int = 120,
+) -> bytes:
+    img = _render_health_overlay_image(
+        inp=inp,
+        bg=bg,
+        max_hp=max_hp,
+        current_hp=current_hp,
+        injuries=injuries,
+        threshold=threshold,
+    )
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def render_health_overlay(
+    *,
+    inp: str,
+    out: str,
+    max_hp: int,
+    current_hp: int,
+    injuries: Injuries,
+    bg: Optional[str] = None,
+    threshold: int = 120,
+) -> None:
+    img = _render_health_overlay_image(
+        inp=inp,
+        bg=bg,
+        max_hp=max_hp,
+        current_hp=current_hp,
+        injuries=injuries,
+        threshold=threshold,
+    )
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_img.save(out_path, "PNG")
+    img.save(out_path, "PNG")
 
 
 def parse_args() -> argparse.Namespace:

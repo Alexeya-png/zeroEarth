@@ -11,6 +11,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     kb.button(text="Персонаж", callback_data="menu:char")
     kb.button(text="Склад", callback_data="menu:stash")
     kb.button(text="Рынок", callback_data="menu:market")
+    kb.button(text="Рейды", callback_data="menu:raids")
     kb.button(text="Квесты", callback_data="menu:quests")
     kb.adjust(1)
     return kb.as_markup()

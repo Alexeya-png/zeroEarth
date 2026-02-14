@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Stash</title>
+  <style>
+    :root{
+      --bg: #0f131a;
+      --card: #151b24;
+      --card2:#111823;
+      --text: #e7eefc;
+      --muted: #9fb0c9;
+      --stroke: rgba(255,255,255,.08);
+      --accent: #4aa3ff;
+      --warn: #ffcc66;
+      --radius: 16px;
+      --pad: 14px;
+      --sans: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+    }
+
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    .wrap{
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 14px 12px 24px;
+      padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .card{
+      background: var(--card);
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius);
+      padding: var(--pad);
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .title{
+      display:flex;
+      gap: 12px;
+      align-items:flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    h1{
+      margin:0;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: .2px;
+    }
+
+    .sub{
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .badges{
+      margin-top: 10px;
+      display:flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .badge{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .badge.tier{
+      border-color: rgba(74,163,255,.35);
+      background: rgba(74,163,255,.08);
+      color: #cfe6ff;
+      font-weight: 600;
+    }
+
+    .section{
+      margin-top: 12px;
+      border-top: 1px solid var(--stroke);
+      padding-top: 12px;
+    }
+
+    .section h2{
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: .2px;
+      text-transform: uppercase;
+    }
+
+    .rows{
+      display:flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .row{
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      background: rgba(0,0,0,.12);
+    }
+
+    .k{
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .v{
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .v.mono{
+      font-family: var(--mono);
+      font-weight: 700;
+      letter-spacing: .2px;
+    }
+
+    .row.stars{
+      border-color: rgba(255,204,102,.28);
+      background: rgba(255,204,102,.08);
+    }
+
+    .btn{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .btn:active{ transform: translateY(1px); }
+
+    .inputRow{
+      display:flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .inp{
+      flex: 1;
+      border: 1px solid var(--stroke);
+      background: rgba(0,0,0,.18);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .loading{
+      color: var(--muted);
+      padding: 24px 6px;
+      text-align:center;
+    }
+
+    .err{
+      color: #ff9a9a;
+      font-size: 13px;
+      margin-top: 6px;
+      text-align:center;
+    }
+
+    .link{
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .link:active{ opacity: .8; }
+
+    .modalBg{
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      display:none;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 10px 12px;
+      padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .modal{
+      width: 100%;
+      max-width: 560px;
+      background: var(--card2);
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.35);
+    }
+
+    .modalTop{
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .modalTitle{
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .xBtn{
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      font-size: 18px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" id="app">
+      <div class="loading">Загрузка…</div>
+    </div>
+  </div>
+
+  <div class="modalBg" id="modalBg">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modalTop">
+        <div class="modalTitle" id="modalTitle">Калибр</div>
+        <button class="xBtn" id="modalClose">×</button>
+      </div>
+      <div class="rows" id="modalRows"></div>
+    </div>
+  </div>
+
+  <script>
+    function escapeHtml(s){
+      return String(s ?? "")
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#39;");
+    }
+
+    function num(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return String(n);
+    }
+
+    function numSigned(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      if (n > 0) return "+" + n;
+      return String(n);
+    }
+
+    function kg(v){
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return (Math.round(n * 100) / 100).toFixed(2).replaceAll(".00","") + " кг";
+    }
+
+    function money(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return n.toLocaleString("ru-RU") + " ⟡";
+    }
+
+    function stars(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return n.toLocaleString("ru-RU") + " ⭐";
+    }
+
+    function tierFrom(item){
+      return item?.equipment_stats?.tier || item?.weapon_mod?.tier || item?.quality_tier || "–";
+    }
+
+    function tagType(item){
+      const t = String(item?.item_type || "–").toLowerCase();
+      if (t === "weapon") return "weapon";
+      if (t === "ammo") return "ammo";
+      if (t === "head") return "head";
+      if (t === "body") return "body";
+      if (t === "gloves") return "gloves";
+      if (t === "boots") return "boots";
+      return t || "misc";
+    }
+
+    function row(k, v, cls=""){
+      return `
+        <div class="row ${cls}">
+          <div class="k">${escapeHtml(k)}</div>
+          <div class="v">${escapeHtml(v)}</div>
+        </div>
+      `;
+    }
+
+    function rowHtml(k, vHtml, cls=""){
+      return `
+        <div class="row ${cls}">
+          <div class="k">${escapeHtml(k)}</div>
+          <div class="v">${vHtml}</div>
+        </div>
+      `;
+    }
+
+    function section(title, rowsHtml){
+      if (!rowsHtml) return "";
+      return `
+        <div class="section">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="rows">${rowsHtml}</div>
+        </div>
+      `;
+    }
+
+    function bonusKeyRu(k){
+      const m = {
+        accuracy_bonus: "Точность",
+        reliability_bonus: "Надежность",
+        damage_bonus: "Урон",
+        armor_pen_bonus: "Пробитие",
+        stealth_bonus: "Скрытность",
+        carry_capacity_bonus: "Переноска",
+        loot_analysis_bonus: "Распознавание предметов",
+        armor: "Броня"
+      };
+      return m[k] || k;
+    }
+
+    function renderItem(item){
+      const app = document.getElementById("app");
+
+      const type = tagType(item);
+      const tier = tierFrom(item);
+
+      const badges = [
+        `<span class="badge">${escapeHtml(type)}</span>`,
+        `<span class="badge tier">Tier ${escapeHtml(tier)}</span>`
+      ];
+
+      const market = item.market || {};
+      const avg = market.avg_price != null ? money(market.avg_price) : "–";
+      const starsAvg = market.stars_avg_price != null ? stars(market.stars_avg_price) : null;
+
+      const top = `
+        <div class="title">
+          <div>
+            <h1>${escapeHtml(item.name || "Предмет")}</h1>
+            <div class="sub">ID – ${escapeHtml(item.id)}</div>
+            <div class="badges">${badges.join("")}</div>
+          </div>
+        </div>
+      `;
+
+      let html = top;
+
+      html += section(
+        "Рынок",
+        row("Средняя цена на рынке", avg) +
+        (starsAvg ? row("Средняя цена на рынке Звезды", starsAvg, "stars") : "")
+      );
+
+      const eq = item.equipment_stats;
+      const w = item.weight_kg;
+
+      if (type === "head" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к распознаванию предметов", numSigned(eq.loot_analysis_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "body" && eq){
+        const stealth = Number(eq.stealth_bonus ?? 0);
+        const stealthLabel = stealth < 0 ? "Штраф к скрытности" : "Бонус к скрытности";
+        html += section(
+          "Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к переноске", numSigned(eq.carry_capacity_bonus)) +
+          row(stealthLabel, numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "gloves" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к точности", numSigned(eq.accuracy_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "boots" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к скрытности", numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "ammo"){
+        const a = item.ammo_stats || {};
+        html += section(
+          "Характеристики патронов",
+          row("Урон", a.damage != null ? String(a.damage) : "–") +
+          row("Пробитие", a.armor_penetration != null ? String(a.armor_penetration) : "–") +
+          row("Вес", kg(w))
+        );
+      } else if (type === "weapon"){
+        const caliber = item.caliber?.code || item.caliber?.name;
+        const caliberHtml = caliber
+          ? `<a class="link" data-caliber="${escapeHtml(caliber)}">${escapeHtml(caliber)}</a>`
+          : "–";
+
+        html += section(
+          "Характеристики оружия",
+          row("Точность", item.accuracy != null ? String(item.accuracy) : "–") +
+          row("Надежность", item.reliability != null ? String(item.reliability) + "%" : "–") +
+          rowHtml("Калибр", caliberHtml) +
+          row("Вес", kg(w))
+        );
+
+        const u = item.weapon_unique;
+        const bonus = u?.total_bonus || {};
+        const bonusKeys = Object.keys(bonus || {}).filter(k => {
+          const v = bonus[k];
+          if (v == null) return false;
+          const n = Number(v);
+          return Number.isFinite(n) && n !== 0;
+        });
+
+        if (bonusKeys.length){
+          const rows = bonusKeys.map(k => row(bonusKeyRu(k), numSigned(bonus[k]))).join("");
+          html += section("Дополнительные бонусы от модулей", rows);
+        }
+
+        const mods = u?.mods || [];
+        if (mods.length){
+          const rows = mods.map(m => {
+            const parts = [];
+            if (Number(m.accuracy_bonus || 0) !== 0) parts.push("точность " + numSigned(m.accuracy_bonus));
+            if (Number(m.reliability_bonus || 0) !== 0) parts.push("надежность " + numSigned(m.reliability_bonus));
+            if (Number(m.damage_bonus || 0) !== 0) parts.push("урон " + numSigned(m.damage_bonus));
+            if (Number(m.armor_pen_bonus || 0) !== 0) parts.push("пробитие " + numSigned(m.armor_pen_bonus));
+            const tail = parts.length ? " – " + parts.join(", ") : "";
+            const name = escapeHtml(m.name || ("Мод " + m.id)) + tail;
+            return rowHtml("Модуль", `<a class="link" data-item="${escapeHtml(m.id)}">${name}</a>`);
+          }).join("");
+
+          html += section("Список модулей", rows);
+        }
+      }
+
+      const mod = item.weapon_mod;
+      if (mod){
+        html += section(
+          "Характеристики модуля",
+          row("Тип", mod.mod_type || "–") +
+          row("Tier", mod.tier || "–") +
+          row("Бонус к точности", numSigned(mod.accuracy_bonus)) +
+          row("Бонус к надежности", numSigned(mod.reliability_bonus)) +
+          row("Бонус к урону", numSigned(mod.damage_bonus)) +
+          row("Бонус к пробитию", numSigned(mod.armor_pen_bonus)) +
+          row("Вес", kg(w))
+        );
+      }
+
+      if (!eq && type !== "weapon" && type !== "ammo" && !mod){
+        html += section("Характеристики", row("Вес", kg(w)) + row("Цена", money(item.price)));
+      }
+
+      app.innerHTML = html;
+
+      app.querySelectorAll("[data-item]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-item");
+          if (!id) return;
+          openItem(id);
+        });
+      });
+
+      app.querySelectorAll("[data-caliber]").forEach(el => {
+        el.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          const code = el.getAttribute("data-caliber");
+          if (!code) return;
+          showModal("Калибр", [row("Код", code)]);
+        });
+      });
+    }
+
+    function showModal(title, rowsHtmlArr){
+      const bg = document.getElementById("modalBg");
+      const t = document.getElementById("modalTitle");
+      const rows = document.getElementById("modalRows");
+      t.textContent = title;
+      rows.innerHTML = rowsHtmlArr.join("");
+      bg.style.display = "flex";
+    }
+
+    function hideModal(){
+      document.getElementById("modalBg").style.display = "none";
+    }
+
+    document.getElementById("modalClose").addEventListener("click", hideModal);
+    document.getElementById("modalBg").addEventListener("click", (e) => {
+      if (e.target.id === "modalBg") hideModal();
+    });
+
+    async function loadById(id){
+      const app = document.getElementById("app");
+      app.innerHTML = `<div class="loading">Загрузка…</div>`;
+
+      const r = await fetch(`/api/item?id=${encodeURIComponent(id)}`);
+      let j = null;
+      try{ j = await r.json(); }catch(e){}
+
+      if (!j || !j.ok){
+        app.innerHTML = `
+          <div class="loading">Не найдено</div>
+          <div class="err">${escapeHtml(j?.error || "Ошибка запроса")}</div>
+        `;
+        return;
+      }
+      renderItem(j.item);
+    }
+
+    function openItem(id){
+      const url = new URL(window.location.href);
+      url.searchParams.set("id", String(id));
+      history.pushState({id: String(id)}, "", url.toString());
+      loadById(id);
+    }
+
+    function getStartItemId(){
+      const p = new URLSearchParams(window.location.search);
+      const id = p.get("id");
+      if (id && /^\d+$/.test(id)) return id;
+
+      const sp = p.get("tgWebAppStartParam") || p.get("startapp");
+      if (sp && /^i\d+$/.test(sp)) return sp.slice(1);
+
+      return null;
+    }
+
+    function renderNoId(){
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <div>
+          <h1>Stash</h1>
+          <div class="sub">Нет item id</div>
+
+          <div class="inputRow">
+            <input id="iid" class="inp" inputmode="numeric" placeholder="ID предмета" />
+            <button id="go" class="btn">Открыть</button>
+          </div>
+
+          <div class="sub" style="margin-top:10px;">Для теста в браузере – /stash?id=405</div>
+        </div>
+      `;
+
+      document.getElementById("go").addEventListener("click", () => {
+        const v = document.getElementById("iid").value.trim();
+        if (!/^\d+$/.test(v)) return;
+        openItem(v);
+      });
+    }
+
+    try{
+      if (window.Telegram && Telegram.WebApp){
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        const tp = Telegram.WebApp.themeParams || {};
+        if (tp.bg_color) document.documentElement.style.setProperty("--bg", tp.bg_color);
+        if (tp.text_color) document.documentElement.style.setProperty("--text", tp.text_color);
+        if (tp.hint_color) document.documentElement.style.setProperty("--muted", tp.hint_color);
+        if (tp.button_color) document.documentElement.style.setProperty("--accent", tp.button_color);
+      }
+    }catch(e){}
+
+    const first = getStartItemId();
+    if (first) loadById(first);
+    else renderNoId();
+
+    window.addEventListener("popstate", () => {
+      const id = getStartItemId();
+      if (id) loadById(id);
+      else renderNoId();
+    });
+  </script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,8 +18,30 @@ class UserInfo:
     balance: int
 
 
+@dataclass(frozen=True)
+class StashPage:
+    text: str
+    page: int
+    total_pages: int
+    total_items: int
+    # кнопки для WebApp по текущей странице – (номер в списке, item_id)
+    page_links: list[tuple[int, int]]
+
+
 class StashError(Exception):
     pass
+
+
+def _miniapp_href(start_param: str) -> str:
+    bot_username = (os.getenv("TG_BOT_USERNAME") or "").lstrip("@")
+    webapp_name = (os.getenv("TG_WEBAPP_NAME") or "").strip().lstrip("/")
+
+    if not bot_username:
+        bot_username = "zeroearth_bot"
+    if not webapp_name:
+        webapp_name = "stash"
+
+    return f"https://t.me/{bot_username}/{webapp_name}?startapp={start_param}"
 
 
 def _esc(s: str) -> str:
@@ -53,62 +77,59 @@ def _truncate(s: str, max_len: int) -> str:
     return s[: max_len - 1] + "…"
 
 
-def _render_inventory_table(rows: list[dict[str, str]]) -> str:
-    # rows: {"name": str, "qty": str, "weight": str, "rarity": str, "tier": str}
-    if not rows:
-        return "Пусто"
-
-    has_tier = any((r.get("tier") or "").strip() for r in rows)
-
-    name_w = max(len("Предмет"), *(len(r["name"]) for r in rows))
-    qty_w = max(len("Кол"), *(len(r["qty"]) for r in rows))
-    wgt_w = max(len("Вес"), *(len(r["weight"]) for r in rows))
-    typ_w = max(len("Тип"), *(len(r["rarity"]) for r in rows))
-
-    if has_tier:
-        tier_w = max(len("Тир"), *(len((r.get("tier") or "")) for r in rows))
-    else:
-        tier_w = 0
-
-    if name_w > 48:
-        name_w = 48
-        for r in rows:
-            r["name"] = _truncate(r["name"], name_w)
-
-    parts = [
-        "Предмет".ljust(name_w),
-        "Кол".rjust(qty_w),
-        "Вес".rjust(wgt_w),
-    ]
-    if has_tier:
-        parts.append("Тир".ljust(tier_w))
-    parts.append("Тип".ljust(typ_w))
-
-    header = "  ".join(parts)
-
-    out = [header]
-    for r in rows:
-        parts = [
-            r["name"].ljust(name_w),
-            r["qty"].rjust(qty_w),
-            r["weight"].rjust(wgt_w),
-        ]
-        if has_tier:
-            parts.append((r.get("tier") or "").ljust(tier_w))
-        parts.append(r["rarity"].ljust(typ_w))
-        out.append("  ".join(parts))
-
-    return "<pre>" + "\n".join(out) + "</pre>"
+def _ceil_div(a: int, b: int) -> int:
+    if b <= 0:
+        return 1
+    return int(math.ceil(a / b)) if a > 0 else 1
 
 
-def _fmt_line(name: Any, weight: Any, loot_type: Any, tier: Any) -> str:
+def _link_name(item_id: Any, escaped_name: str) -> str:
+    if item_id is None:
+        return escaped_name
+    try:
+        iid = int(item_id)
+    except Exception:
+        return escaped_name
+
+    href = _miniapp_href(f"i{iid}")
+    return f'<a href="{href}">{escaped_name}</a>'
+
+
+def _fmt_line(item_id: Any, name: Any, weight: Any, loot_type: Any, tier: Any) -> str:
     n = _esc(str(name))
+    n = _link_name(item_id, n)
     w = _fmt_kg(_to_float(weight))
     lt = str(loot_type or "common")
     t = str(tier or "").strip()
+    t = _esc(t) if t else ""
     if t:
         return f"{n} – {w} – {t} – {lt}"
     return f"{n} – {w} – {lt}"
+
+
+def _render_inventory_text(rows: list[dict[str, str]], start_index: int) -> str:
+    if not rows:
+        return "Пусто"
+
+    out: list[str] = []
+    idx = start_index
+    for r in rows:
+        name = r["name"]
+
+        item_id = (r.get("item_id") or "").strip()
+        if item_id.isdigit():
+            href = _miniapp_href(f"i{item_id}")
+            name = f'<a href="{href}">{name}</a>'
+
+        qty = r["qty"]
+        weight = r["weight"]
+        loot_type = r["rarity"]
+        tier = (r.get("tier") or "").strip()
+        tier_part = f"{tier} – " if tier else ""
+        out.append(f"{idx}. {name} – x{qty} – {weight} – {tier_part}{loot_type}")
+        idx += 1
+
+    return "\n".join(out)
 
 
 class StashService:
@@ -162,6 +183,16 @@ class StashService:
         )
 
     async def character_stash_text(self, tg_id: int, character_id: int) -> str:
+        page = await self.character_stash_page(tg_id, character_id, page=0, page_size=15)
+        return page.text
+
+    async def character_stash_page(
+        self,
+        tg_id: int,
+        character_id: int,
+        page: int = 0,
+        page_size: int = 15,
+    ) -> StashPage:
         user = await self.ensure_user(tg_id)
 
         ch = (
@@ -302,14 +333,56 @@ class StashService:
             ):
                 total_weight += _to_float(eq.get(k))
 
-        for row in inv:
-            item_id = int(row["item_id"])
-            qty = int(row.get("qty") or 1)
-            equipped_qty = equipped_counts.get(item_id, 0)
-            show_qty = qty - equipped_qty
-            if show_qty <= 0:
-                continue
-            total_weight += _to_float(row.get("weight_each")) * float(show_qty)
+        items_rows: list[dict[str, str]] = []
+        if inv:
+            for row in inv:
+                item_id = int(row["item_id"])
+                qty = int(row.get("qty") or 1)
+                equipped_qty = equipped_counts.get(item_id, 0)
+                show_qty = qty - equipped_qty
+                if show_qty <= 0:
+                    continue
+
+                w_total = _to_float(row.get("weight_each")) * float(show_qty)
+                total_weight += w_total
+
+                n = _esc(str(row["name"]))
+                if len(n) > 70:
+                    n = _truncate(n, 70)
+
+                loot_type = str(row.get("loot_type") or "common")
+
+                tier = str(row.get("tier") or "").strip()
+                tier = _esc(tier) if tier else ""
+
+                items_rows.append(
+                    {
+                        "item_id": str(item_id),
+                        "name": n,
+                        "qty": str(show_qty),
+                        "weight": _fmt_kg(w_total),
+                        "rarity": loot_type,
+                        "tier": tier,
+                    }
+                )
+
+        total_items = len(items_rows)
+        total_pages = _ceil_div(total_items, page_size)
+
+        if page < 0:
+            page = 0
+        if page >= total_pages:
+            page = total_pages - 1
+
+        start_i = page * page_size
+        end_i = min(start_i + page_size, total_items)
+        page_rows = items_rows[start_i:end_i]
+
+        page_links: list[tuple[int, int]] = []
+        for i, r in enumerate(page_rows, start=start_i + 1):
+            item_id_str = (r.get("item_id") or "").strip()
+            if item_id_str.isdigit():
+                page_links.append((i, int(item_id_str)))
 
         name = _esc(str(ch["name"] or "Без имени"))
 
@@ -322,65 +395,60 @@ class StashService:
 
         armor_lines: list[str] = []
         if eq:
-            for k_name, k_w, k_lt, k_tier in (
-                ("head_name", "head_weight", "head_loot_type", "head_tier"),
-                ("body_name", "body_weight", "body_loot_type", "body_tier"),
-                ("gloves_name", "gloves_weight", "gloves_loot_type", "gloves_tier"),
-                ("boots_name", "boots_weight", "boots_loot_type", "boots_tier"),
+            for id_k, n_k, w_k, lt_k, t_k in (
+                ("head_item_id", "head_name", "head_weight", "head_loot_type", "head_tier"),
+                ("body_item_id", "body_name", "body_weight", "body_loot_type", "body_tier"),
+                ("gloves_item_id", "gloves_name", "gloves_weight", "gloves_loot_type", "gloves_tier"),
+                ("boots_item_id", "boots_name", "boots_weight", "boots_loot_type", "boots_tier"),
             ):
-                n = eq.get(k_name)
+                n = eq.get(n_k)
                 if not n:
                     continue
-                armor_lines.append(_fmt_line(n, eq.get(k_w), eq.get(k_lt), eq.get(k_tier)))
+                armor_lines.append(_fmt_line(eq.get(id_k), n, eq.get(w_k), eq.get(lt_k), eq.get(t_k)))
 
         lines.extend(armor_lines or ["Пусто"])
         lines += ["", "<b>Надето – оружие</b>"]
 
         weapon_lines: list[str] = []
         if eq:
-            for k_name, k_w, k_lt, k_tier in (
-                ("w1_name", "w1_weight", "w1_loot_type", "w1_tier"),
-                ("w2_name", "w2_weight", "w2_loot_type", "w2_tier"),
-                ("w3_name", "w3_weight", "w3_loot_type", "w3_tier"),
+            for id_k, n_k, w_k, lt_k, t_k in (
+                ("weapon_1_id", "w1_name", "w1_weight", "w1_loot_type", "w1_tier"),
+                ("weapon_2_id", "w2_name", "w2_weight", "w2_loot_type", "w2_tier"),
+                ("weapon_3_id", "w3_name", "w3_weight", "w3_loot_type", "w3_tier"),
             ):
-                n = eq.get(k_name)
+                n = eq.get(n_k)
                 if not n:
                     continue
-                weapon_lines.append(_fmt_line(n, eq.get(k_w), eq.get(k_lt), eq.get(k_tier)))
+                weapon_lines.append(_fmt_line(eq.get(id_k), n, eq.get(w_k), eq.get(lt_k), eq.get(t_k)))
 
         lines.extend(weapon_lines or ["Пусто"])
         lines += ["", "<b>Инвентарь</b>"]
 
-        table_rows: list[dict[str, str]] = []
-        if inv:
-            for row in inv:
-                item_id = int(row["item_id"])
-                qty = int(row.get("qty") or 1)
-                equipped_qty = equipped_counts.get(item_id, 0)
-                show_qty = qty - equipped_qty
-                if show_qty <= 0:
-                    continue
-
-                n = _esc(str(row["name"]))
-                w = _to_float(row.get("weight_each")) * float(show_qty)
-                loot_type = str(row.get("loot_type") or "common")
-
-                tier = str(row.get("tier") or "").strip()
-                tier = _esc(tier) if tier else ""
-
-                table_rows.append(
-                    {
-                        "name": n,
-                        "qty": str(show_qty),
-                        "weight": _fmt_kg(w),
-                        "rarity": loot_type,
-                        "tier": tier,
-                    }
-                )
-
-        if not table_rows:
+        if total_items <= 0:
             lines.append("Пусто")
         else:
-            lines.append(_render_inventory_table(table_rows))
+            lines.append(f"Страница {page + 1}/{total_pages} – {start_i + 1}-{end_i} из {total_items}")
+            lines.append(_render_inventory_text(page_rows, start_index=start_i + 1))
 
-        return "\n".join(lines).rstrip()
+        out = "\n".join(lines).rstrip()
+
+        if len(out) > 4096 and page_rows:
+            cut = len(page_rows)
+            while cut > 1 and len(out) > 4096:
+                cut -= 1
+                tmp_lines = lines[:-1] + [_render_inventory_text(page_rows[:cut], start_index=start_i + 1)]
+                out = "\n".join(tmp_lines).rstrip()
+
+            page_links = page_links[:cut]
+
+            if len(out) > 4096:
+                out = out[:4090] + "…"
+                page_links = page_links[: max(0, len(page_links))]
+
+        return StashPage(
+            text=out,
+            page=page,
+            total_pages=total_pages,
+            total_items=total_items,
+            page_links=page_links,
+        )

@@ -50,7 +50,7 @@ async def run() -> None:
     engine, sessionmaker = create_engine_and_sessionmaker(settings.DB_URL)
     await init_db(engine)
 
-    raids_task = asyncio.create_task(raids_ticker(sessionmaker, tick_seconds=60))
+    raids_task = asyncio.create_task(raids_ticker(sessionmaker, tick_seconds=60, bot=bot))
 
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
 

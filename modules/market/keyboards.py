@@ -52,6 +52,43 @@ def market_buy_confirm_kb(*, listing_id: int, page: int) -> InlineKeyboardMarkup
     return kb.as_markup()
 
 
+def market_buy_qty_kb(*, listing_id: int, page: int, qty: int, max_qty: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="−", callback_data=f"market:buyqty:dec:{int(listing_id)}:{int(page)}")
+    kb.button(text=f"{int(qty)}/{int(max_qty)}", callback_data="market:noop")
+    kb.button(text="+", callback_data=f"market:buyqty:inc:{int(listing_id)}:{int(page)}")
+
+    if int(max_qty) > 1:
+        kb.button(text="MAX", callback_data=f"market:buyqty:max:{int(listing_id)}:{int(page)}")
+
+    kb.button(text="Подтвердить", callback_data=f"market:buyqty:confirm:{int(listing_id)}:{int(page)}")
+    kb.button(text="Назад", callback_data=f"market:details:show:{int(listing_id)}:{int(page)}")
+
+    if int(max_qty) > 1:
+        kb.adjust(3, 1, 1, 1)
+    else:
+        kb.adjust(3, 1, 1)
+
+    return kb.as_markup()
+
+
+def market_buy_qty_pick_char_kb(chars: list[dict], *, listing_id: int, page: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    for ch in chars:
+        cid = int(ch.get("id") or 0)
+        name = str(ch.get("name") or f"#{cid}")
+        if cid <= 0:
+            continue
+        kb.button(text=name, callback_data=f"market:buyqty:char:{int(listing_id)}:{int(page)}:{cid}")
+
+    kb.adjust(1)
+    kb.button(text="Назад", callback_data=f"market:details:show:{int(listing_id)}:{int(page)}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def market_pick_char_kb(chars: list[dict], *, action: str, listing_id: int, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
 
@@ -71,11 +108,25 @@ def market_pick_char_kb(chars: list[dict], *, action: str, listing_id: int, page
     return kb.as_markup()
 
 
-def market_sell_cancel_kb() -> InlineKeyboardMarkup:
+def market_sell_cancel_kb(*, page: int = 0, has_prev: bool = False, has_next: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+
+    nav_cnt = 0
+    if has_prev:
+        kb.button(text="←", callback_data=f"market:sell:page:{int(page - 1)}")
+        nav_cnt += 1
+    if has_next:
+        kb.button(text="→", callback_data=f"market:sell:page:{int(page + 1)}")
+        nav_cnt += 1
+
     kb.button(text="Отмена", callback_data="market:sell:cancel")
     kb.button(text="Меню", callback_data="menu:back")
-    kb.adjust(1, 1)
+
+    if nav_cnt:
+        kb.adjust(nav_cnt, 2)
+    else:
+        kb.adjust(2)
+
     return kb.as_markup()
 
 

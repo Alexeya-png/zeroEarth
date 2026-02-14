@@ -1,4 +1,5 @@
-from aiogram.fsm.state import State, StatesGroup
+# states.py
+from aiogram.fsm.state import StatesGroup, State
 
 
 class WeaponUpgradeStates(StatesGroup):

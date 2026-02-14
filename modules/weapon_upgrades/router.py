@@ -1,3 +1,4 @@
+# router.py
 from __future__ import annotations
 
 from aiogram import Router, F
@@ -81,6 +82,7 @@ async def _compose_slot_lines(svc: WeaponUpgradeService, character_id: int, slot
     rel_b = _bonus_int(total_bonus, "reliability_bonus")
     dmg_b = _bonus_int(total_bonus, "damage_bonus")
     pen_b = _bonus_int(total_bonus, "armor_pen_bonus")
+    loot_b = _bonus_int(total_bonus, "loot_analysis_bonus")
 
     ammo_line = "- нет данных"
     if ammo:
@@ -92,22 +94,23 @@ async def _compose_slot_lines(svc: WeaponUpgradeService, character_id: int, slot
         )
 
     bonus_line = "- нет"
-    if any(v != 0 for v in (acc_b, rel_b, dmg_b, pen_b)):
-        bonus_line = f"ACC {acc_b:+} REL {rel_b:+} DMG {dmg_b:+} PEN {pen_b:+}"
+    if any(v != 0 for v in (acc_b, rel_b, dmg_b, pen_b, loot_b)):
+        bonus_line = f"ACC {acc_b:+} REL {rel_b:+} DMG {dmg_b:+} PEN {pen_b:+} LOOT {loot_b:+}"
 
     mod_lines: list[str] = []
     shown_any = False
     if inv_mods:
         for m in inv_mods:
-            if not m.is_compatible(weapon.category, base_id):
+            if not m.is_compatible(weapon.category, base_id, installed_types=installed_types):
                 continue
             if m.mod_type in installed_types:
                 continue
 
             shown_any = True
+            loot_tail = f" LOOT {m.loot_analysis_bonus:+}" if int(m.loot_analysis_bonus or 0) != 0 else ""
             mod_lines.append(
                 f"ID {m.item_id} ×{m.qty} – {m.name} | {m.mod_type}/{m.tier} | "
-                f"ACC {m.accuracy_bonus:+} REL {m.reliability_bonus:+} DMG {m.damage_bonus:+} PEN {m.armor_pen_bonus:+}"
+                f"ACC {m.accuracy_bonus:+} REL {m.reliability_bonus:+} DMG {m.damage_bonus:+} PEN {m.armor_pen_bonus:+}{loot_tail}"
             )
 
     if not shown_any:

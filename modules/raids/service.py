@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .engine import RaidsEngine
+from .events import RaidEvents
 
 
 def _utcnow() -> datetime:
@@ -347,6 +348,59 @@ class RaidsService:
 
         return "\nЛут: " + ", ".join(parts)
 
+    async def _raid_events_block(self, raid_id: int, limit: int = 10) -> tuple[str, str]:
+        q = await self.db.execute(
+            text(
+                """
+                SELECT id, kind, payload, point_id, fight_id, created_at
+                FROM raid_logs
+                WHERE raid_id = :rid
+                ORDER BY id DESC
+                LIMIT :lim
+                """
+            ),
+            {"rid": int(raid_id), "lim": int(limit)},
+        )
+
+        raw = q.mappings().all()
+        if not raw:
+            return "", ""
+
+        logs: list[dict] = []
+        for r in raw:
+            d = dict(r)
+            payload = d.get("payload")
+            if isinstance(payload, str):
+                try:
+                    d["payload"] = json.loads(payload)
+                except Exception:
+                    d["payload"] = {}
+            elif payload is None:
+                d["payload"] = {}
+            logs.append(d)
+
+        logs = list(reversed(logs))
+        ctx = await RaidEvents.build_context(self.db, logs)
+        now = _utcnow()
+
+        lines: list[str] = []
+        last_fight_narrative: list[str] = []
+
+        for lg in logs:
+            lines.append("- " + RaidEvents.format_one(lg, ctx, now=now, for_notify=False))
+
+            if lg.get("kind") == "fight_finished":
+                payload = lg.get("payload") or {}
+                narrative = payload.get("narrative")
+                if isinstance(narrative, list) and narrative:
+                    last_fight_narrative = [str(x) for x in narrative]
+
+        fight_text = ""
+        if last_fight_narrative:
+            fight_text = "\n".join("- " + _esc_html(x) for x in last_fight_narrative[:12])
+
+        return "\n".join(lines), fight_text
+
     async def _items_line_from_list(self, items_list: list[dict]) -> str:
         id_to_qty: dict[int, int] = {}
         for it in items_list:
@@ -579,17 +633,19 @@ class RaidsService:
 
         return report
 
-    async def raid_status_text(self, tg_id: int, character_id: int) -> str:
-        try:
-            await self.tick()
-        except Exception:
-            await self.db.rollback()
+    async def raid_status_text(
+            self,
+            tg_id: int,
+            character_id: int,
+            include_last_result: bool = False,
+    ) -> tuple[str, bool]:
 
         q = await self.db.execute(
             text(
                 """
                 SELECT r.id AS raid_id, r.status, r.phase, r.behavior_model, r.search_goal,
                        r.search_minutes_spent, r.search_limit_minutes,
+                       COALESCE((r.meta_json->>'notify_enabled')::boolean, false) AS notify_enabled,
                        rl.name AS location_name, rp.name AS point_name,
                        pr.state AS presence_state,
                        pr.travel_eta_at, pr.search_eta_at
@@ -609,10 +665,11 @@ class RaidsService:
         )
         row = q.mappings().first()
         if not row:
-            report = await self._maybe_last_raid_result_text(tg_id, character_id)
-            if report:
-                return report
-            return "<b>Рейды</b>\nНет активного рейда."
+            if include_last_result:
+                report = await self._maybe_last_raid_result_text(tg_id, character_id)
+                if report:
+                    return report, False
+            return "<b>Рейды</b>\nНет активного рейда.", False
 
         now = _utcnow()
         eta_line = ""
@@ -639,9 +696,11 @@ class RaidsService:
         spent = int(row.get("search_minutes_spent") or 0)
         limit = int(row.get("search_limit_minutes") or 0)
 
-        loot_line = await self._last_loot_line(int(row.get("raid_id") or 0))
+        raid_id = int(row.get("raid_id") or 0)
+        notify_enabled = bool(row.get("notify_enabled") or False)
 
-        return (
+        loot_line = await self._last_loot_line(raid_id)
+        base_text = (
             "<b>Рейд</b>\n"
             f"Локация: {loc}\n"
             f"Точка: {pt}\n"
@@ -652,6 +711,78 @@ class RaidsService:
             f"{eta_line}"
             f"{loot_line}"
         )
+
+        events_text, fight_text = await self._raid_events_block(raid_id, limit=10)
+        if events_text:
+            base_text += "\n\n<b>События</b>\n" + events_text
+        if fight_text:
+            base_text += "\n\n<b>Перестрелка</b>\n" + fight_text
+
+        return base_text, notify_enabled
+
+    # modules/raids/service.py — заменить метод целиком
+
+    async def toggle_notifications(self, tg_id: int, character_id: int) -> bool:
+        q = await self.db.execute(
+            text(
+                """
+                SELECT r.id AS raid_id,
+                       COALESCE((r.meta_json->>'notify_enabled')::boolean, false) AS enabled,
+                       COALESCE((SELECT max(l.id) FROM raid_logs l WHERE l.raid_id = r.id), 0) AS max_log_id,
+                       COALESCE((SELECT max(l.created_at) FROM raid_logs l WHERE l.raid_id = r.id), now()) AS max_log_at
+                FROM raids r
+                JOIN characters c ON c.id = r.character_id
+                JOIN users u ON u.id = c.user_id
+                WHERE u.tg_id = :tg_id AND r.character_id = :cid AND r.status = 'active'
+                ORDER BY r.started_at DESC
+                LIMIT 1
+                """
+            ),
+            {"tg_id": int(tg_id), "cid": int(character_id)},
+        )
+        row = q.mappings().first()
+        if not row:
+            return False
+
+        raid_id = int(row["raid_id"])
+        enabled = bool(row["enabled"])
+        max_log_id = int(row["max_log_id"] or 0)
+        max_log_at = row["max_log_at"]
+
+        new_enabled = not enabled
+
+        if new_enabled:
+            last_id = max_log_id
+            last_at_iso = (
+                max_log_at.isoformat()
+                if isinstance(max_log_at, datetime)
+                else _utcnow().isoformat()
+            )
+        else:
+            last_id = int(row.get("max_log_id") or 0)
+            last_at_iso = _utcnow().isoformat()
+
+        await self.db.execute(
+            text(
+                """
+                UPDATE raids
+                SET meta_json =
+                    jsonb_set(
+                        jsonb_set(
+                            jsonb_set(
+                                COALESCE(meta_json, '{}'::jsonb),
+                                '{notify_enabled}', to_jsonb(CAST(:enabled AS boolean)), true
+                            ),
+                            '{notify_last_log_id}', to_jsonb(CAST(:last_id AS bigint)), true
+                        ),
+                        '{notify_last_at}', to_jsonb(CAST(:last_at AS text)), true
+                    )
+                WHERE id = :raid_id
+                """
+            ),
+            {"raid_id": raid_id, "enabled": new_enabled, "last_id": last_id, "last_at": last_at_iso},
+        )
+        return new_enabled
 
     async def cancel_raid(self, tg_id: int, character_id: int) -> tuple[bool, str]:
         q = await self.db.execute(

@@ -89,6 +89,7 @@ class ListingDetails:
     is_unique: bool
     unique_total_bonus: dict[str, int]
     mods_count: int
+    mods: list[str]
     price_stars: int
     status: str
     seller_tg_id: int
@@ -391,6 +392,16 @@ class StarsWeaponMarketService:
         is_unique = uniq is not None
         tb = uniq.total_bonus if uniq else {}
         mods_count = len(uniq.mods) if uniq else 0
+        mods_lines: list[str] = []
+        if uniq and getattr(uniq, 'mods', None):
+            for m in (uniq.mods or []):
+                mt = str((m or {}).get('mod_type') or '').strip()
+                nm = str((m or {}).get('name') or '').strip()
+                if mt and nm:
+                    mods_lines.append(f"{mt} – {nm}")
+                elif nm:
+                    mods_lines.append(nm)
+
 
         return ListingDetails(
             id=int(r.get("id") or 0),
@@ -412,6 +423,7 @@ class StarsWeaponMarketService:
                 "armor_pen_bonus": int(tb.get("armor_pen_bonus", 0) or 0),
             },
             mods_count=int(mods_count),
+            mods=mods_lines,
             price_stars=int(r.get("price_stars") or 0),
             status=str(r.get("status") or "active"),
             seller_tg_id=int(r.get("seller_tg_id") or 0),
@@ -419,36 +431,47 @@ class StarsWeaponMarketService:
         )
 
     def listing_details_text(self, d: ListingDetails) -> str:
+        mods = d.mods or []
         bonus = d.unique_total_bonus or {}
-        b_lines = []
-        if d.is_unique:
-            b_lines.append(f"Уникальное: <b>да</b> – модов: <b>{d.mods_count}</b>")
-            if any(int(v) != 0 for v in bonus.values()):
-                b_lines.append(
-                    "Бонусы: "
-                    f"Точн {bonus.get('accuracy_bonus', 0):+d}, "
-                    f"Над {bonus.get('reliability_bonus', 0):+d}, "
-                    f"Урон {bonus.get('damage_bonus', 0):+d}, "
-                    f"Проб {bonus.get('armor_pen_bonus', 0):+d}"
-                )
-        else:
-            b_lines.append("Уникальное: <b>нет</b>")
 
-        lines = [
+        lines: list[str] = [
             "<b>Лот оружия – Stars</b>",
-            f"<pre>{_esc(d.weapon_name)} – ID оружия {d.weapon_id} – ID лота {d.id}</pre>",
+            f"Оружие: <b>{_esc(d.weapon_name)}</b>",
             f"Цена: <b>⭐{max(0, int(d.price_stars))}</b>",
             f"Категория: <b>{_esc(d.category)}</b>",
             f"Калибр: <b>{_esc(d.caliber_name or d.caliber_code)}</b>",
             f"Точность: <b>{int(d.accuracy)}</b>",
             f"Надёжность: <b>{int(d.reliability)}</b>",
-            f"Тир: <b>{_esc(d.quality_tier)}</b> – score: <b>{int(d.quality_score)}</b>",
+            f"Тир: <b>{_esc(d.quality_tier)}</b>",
             f"Вес: <b>{d.weight_kg:.3f}</b> кг",
-            "",
-            "\n".join(b_lines).rstrip(),
-            "",
-            f"Создан: <b>{_esc(d.created_at)}</b>",
+            "Модификации:",
         ]
+
+        if mods:
+            for x in mods:
+                lines.append(f"- {_esc(x)}")
+        else:
+            lines.append("- –")
+
+        lines.append("Дополнительные бонусы:")
+
+        bonus_lines: list[str] = []
+        if any(int(v) != 0 for v in bonus.values()):
+            if int(bonus.get("accuracy_bonus", 0) or 0) != 0:
+                bonus_lines.append(f"- Точность {int(bonus.get('accuracy_bonus', 0)):+d}")
+            if int(bonus.get("reliability_bonus", 0) or 0) != 0:
+                bonus_lines.append(f"- Надёжность {int(bonus.get('reliability_bonus', 0)):+d}")
+            if int(bonus.get("damage_bonus", 0) or 0) != 0:
+                bonus_lines.append(f"- Урон {int(bonus.get('damage_bonus', 0)):+d}")
+            if int(bonus.get("armor_pen_bonus", 0) or 0) != 0:
+                bonus_lines.append(f"- Пробитие {int(bonus.get('armor_pen_bonus', 0)):+d}")
+
+        if bonus_lines:
+            lines.extend(bonus_lines)
+        else:
+            lines.append("- –")
+
+        lines.append(f"Создан: <b>{_esc(d.created_at)}</b>")
         return "\n".join([x for x in lines if x is not None]).rstrip()
 
     async def list_sellable_weapons(self, tg_id: int, character_id: int, limit: int, offset: int) -> list[SellableWeaponView]:

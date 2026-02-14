@@ -109,15 +109,23 @@ async def open_market(message: Message, db_session: AsyncSession, state: FSMCont
     await state.clear()
     user = await StartService(db_session).ensure_user(message.from_user.id)
 
+    balance = int(getattr(user, "balance", 0) or 0)
+
     svc = MarketService(db_session)
-    base, mp = await svc.market_text(page=0, page_size=MARKET_PAGE_SIZE, exclude_user_id=int(user.id))
+    base, mp = await svc.market_items_text(page=0, page_size=MARKET_PAGE_SIZE, exclude_user_id=int(user.id))
 
-    hint = "\n\nПодсказка: напиши № строки 1–30, чтобы увидеть детали.\nПример: <code>12</code>"
+    hint = "\n\nПодсказка: напиши № товара 1–30, чтобы увидеть лоты.\nПример: <code>12</code>"
     text_out = base + hint
-    if len(text_out) > 3900:
-        text_out = base + hint
 
-    page_listing_ids = [int(x.id) for x in mp.listings]
+    balance_line = f"\n\nБаланс: {balance} монет"
+    if len(text_out) + len(balance_line) > 3900:
+        text_out = base + hint
+        if len(text_out) + len(balance_line) > 3900:
+            text_out = base
+
+    text_out = text_out + balance_line
+
+    page_item_ids = [int(x.item_id) for x in mp.items]
 
     out = await message.answer(
         text_out,
@@ -129,8 +137,9 @@ async def open_market(message: Message, db_session: AsyncSession, state: FSMCont
     await state.update_data(
         chat_id=out.chat.id,
         message_id=out.message_id,
+        market_view="items",
         market_page=int(mp.page),
-        market_page_listing_ids=page_listing_ids,
+        market_page_item_ids=page_item_ids,
     )
 
 

@@ -60,12 +60,13 @@ def raids_confirm_kb(*, character_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def raids_status_kb(*, character_id: int) -> InlineKeyboardMarkup:
+def raids_status_kb(*, character_id: int, notify_enabled: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="Статус", callback_data=f"raids:status:{character_id}")
+    kb.button(text=f"Уведомления: {'ВКЛ' if notify_enabled else 'ВЫКЛ'}", callback_data=f"raids:notify:{character_id}")
     kb.button(text="Отмена", callback_data=f"raids:cancel:{character_id}")
     kb.button(text="Меню", callback_data="menu:back")
-    kb.adjust(2)
+    kb.adjust(2, 2)
     return kb.as_markup()
 
 

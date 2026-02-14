@@ -1,3 +1,4 @@
+# modules/raids/router.py
 from __future__ import annotations
 
 from aiogram import Router, F
@@ -34,8 +35,8 @@ async def _has_active_raid(db_session: AsyncSession, character_id: int) -> bool:
 
 
 async def _open_raid_status(call: CallbackQuery, db_session: AsyncSession, character_id: int) -> None:
-    text_out = await RaidsService(db_session).raid_status_text(call.from_user.id, int(character_id))
-    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=int(character_id)))
+    text_out, notify_enabled = await RaidsService(db_session).raid_status_text(call.from_user.id, int(character_id))
+    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=int(character_id), notify_enabled=notify_enabled))
 
 
 async def _open_equip_raid(call: CallbackQuery, db_session: AsyncSession, state: FSMContext, character_id: int) -> None:
@@ -89,7 +90,12 @@ async def menu_raids(call: CallbackQuery, db_session: AsyncSession, state: FSMCo
         if await _has_active_raid(db_session, cid):
             await _open_raid_status(call, db_session, cid)
         else:
-            await _open_equip_raid(call, db_session, state, cid)
+            raids = RaidsService(db_session)
+            text_out, _ = await raids.raid_status_text(call.from_user.id, cid, include_last_result=True)
+            if text_out.startswith("<b>Результат рейда</b>"):
+                await safe_edit(call, text_out, reply_markup=raids_back_to_equip_kb(character_id=cid))
+            else:
+                await _open_equip_raid(call, db_session, state, cid)
         await call.answer()
         return
 
@@ -114,7 +120,13 @@ async def raids_pick_character(call: CallbackQuery, db_session: AsyncSession, st
         await state.clear()
         await _open_raid_status(call, db_session, character_id)
     else:
-        await _open_equip_raid(call, db_session, state, character_id)
+        raids = RaidsService(db_session)
+        text_out, _ = await raids.raid_status_text(call.from_user.id, character_id, include_last_result=True)
+        if text_out.startswith("<b>Результат рейда</b>"):
+            await state.clear()
+            await safe_edit(call, text_out, reply_markup=raids_back_to_equip_kb(character_id=character_id))
+        else:
+            await _open_equip_raid(call, db_session, state, character_id)
     await call.answer()
 
 
@@ -241,8 +253,8 @@ async def raids_start(call: CallbackQuery, db_session: AsyncSession, state: FSMC
         await call.answer(res.message, show_alert=True)
         return
 
-    text_out = await raids.raid_status_text(call.from_user.id, character_id)
-    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=character_id))
+    text_out, notify_enabled = await raids.raid_status_text(call.from_user.id, character_id)
+    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=character_id, notify_enabled=notify_enabled))
     await call.answer()
 
 
@@ -255,9 +267,40 @@ async def raids_status(call: CallbackQuery, db_session: AsyncSession):
         await call.answer("Ошибка.", show_alert=True)
         return
 
-    text_out = await RaidsService(db_session).raid_status_text(call.from_user.id, character_id)
-    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=character_id))
+    text_out, notify_enabled = await RaidsService(db_session).raid_status_text(
+        call.from_user.id,
+        character_id,
+        include_last_result=True,
+    )
+
+    if text_out.startswith("<b>Рейд</b>"):
+        kb = raids_status_kb(character_id=character_id, notify_enabled=notify_enabled)
+    else:
+        kb = raids_back_to_equip_kb(character_id=character_id)
+
+    await safe_edit(call, text_out, reply_markup=kb)
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("raids:notify:"))
+async def raids_notify_toggle(call: CallbackQuery, db_session: AsyncSession):
+    try:
+        _, _, cid = call.data.split(":", 2)
+        character_id = int(cid)
+    except Exception:
+        await call.answer("Ошибка.", show_alert=True)
+        return
+
+    raids = RaidsService(db_session)
+    try:
+        enabled = await raids.toggle_notifications(call.from_user.id, character_id)
+    except ValueError as e:
+        await call.answer(str(e), show_alert=True)
+        return
+
+    text_out, notify_enabled = await raids.raid_status_text(call.from_user.id, character_id)
+    await safe_edit(call, text_out, reply_markup=raids_status_kb(character_id=character_id, notify_enabled=notify_enabled))
+    await call.answer("Уведомления включены" if enabled else "Уведомления выключены")
 
 
 @router.callback_query(F.data.startswith("raids:cancel:"))

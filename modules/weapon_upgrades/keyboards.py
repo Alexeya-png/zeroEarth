@@ -1,30 +1,31 @@
-from __future__ import annotations
-
-from typing import Mapping
-
-from aiogram.types import InlineKeyboardMarkup
+# keyboards.py
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from .service import WeaponRow
 
+def weapon_upgrade_pick_weapon_kb(character_id: int, weapons: dict[int, object]) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
 
-def weapon_upgrade_pick_weapon_kb(
-    character_id: int,
-    weapons: Mapping[int, WeaponRow],
-) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
     for slot in sorted(weapons.keys()):
         w = weapons[slot]
-        kb.button(text=f"{slot}. {w.name}", callback_data=f"wup:slot:{character_id}:{slot}")
-    kb.button(text="К экипировке", callback_data=f"char:eq:{character_id}")
-    kb.adjust(1)
-    return kb.as_markup()
+        b.add(
+            InlineKeyboardButton(
+                text=f"Слот {slot}",
+                callback_data=f"wup:slot:{character_id}:{slot}",
+            )
+        )
+
+    b.adjust(3)
+    b.row(
+        InlineKeyboardButton(text="Назад", callback_data=f"equip:open:{character_id}"),
+    )
+    return b.as_markup()
 
 
 def weapon_upgrade_slot_kb(character_id: int, slot: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Сменить слот", callback_data=f"wup:open:{character_id}")
-    kb.button(text="Обновить", callback_data=f"wup:cancel:{character_id}:{slot}")
-    kb.button(text="К экипировке", callback_data=f"char:eq:{character_id}")
-    kb.adjust(1)
-    return kb.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="Обновить", callback_data=f"wup:slot:{character_id}:{slot}"),
+        InlineKeyboardButton(text="Назад", callback_data=f"wup:open:{character_id}"),
+    )
+    return b.as_markup()

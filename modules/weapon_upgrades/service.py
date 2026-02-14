@@ -57,11 +57,27 @@ class InventoryMod:
     reliability_bonus: int
     damage_bonus: int
     armor_pen_bonus: int
+    loot_analysis_bonus: int
 
-    def is_compatible(self, weapon_category: str, base_weapon_id: int) -> bool:
+    def is_compatible(
+        self,
+        weapon_category: str,
+        base_weapon_id: int,
+        installed_types: set[str] | None = None,
+    ) -> bool:
         if self.unique_weapon_id is not None and self.unique_weapon_id != base_weapon_id:
             return False
-        return weapon_category in (self.compatible_categories or [])
+
+        if weapon_category not in (self.compatible_categories or []):
+            return False
+
+        if installed_types is not None:
+            it = {str(x).lower() for x in installed_types}
+            mt = str(self.mod_type or "").lower()
+            if mt in ("optic", "scope") and "rail" not in it:
+                return False
+
+        return True
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -73,6 +89,7 @@ class InventoryMod:
             "reliability_bonus": self.reliability_bonus,
             "damage_bonus": self.damage_bonus,
             "armor_pen_bonus": self.armor_pen_bonus,
+            "loot_analysis_bonus": self.loot_analysis_bonus,
         }
 
 
@@ -98,7 +115,6 @@ class WeaponUpgradeService:
         ).first()
         if row:
             raise ValueError("Персонаж в рейде. Улучшение оружия недоступно")
-
 
     async def _get_inventory_qty(self, character_id: int, item_id: int) -> int:
         r = (
@@ -261,6 +277,7 @@ class WeaponUpgradeService:
             "reliability_bonus": int(tb.get("reliability_bonus", 0) or 0),
             "damage_bonus": int(tb.get("damage_bonus", 0) or 0),
             "armor_pen_bonus": int(tb.get("armor_pen_bonus", 0) or 0),
+            "loot_analysis_bonus": int(tb.get("loot_analysis_bonus", 0) or 0),
         }
 
         return UniqueWeaponInfo(
@@ -286,7 +303,12 @@ class WeaponUpgradeService:
                   wm.accuracy_bonus,
                   wm.reliability_bonus,
                   wm.damage_bonus,
-                  wm.armor_pen_bonus
+                  wm.armor_pen_bonus,
+                  COALESCE(
+                    NULLIF(wm.meta_json->>'loot_analysis_bonus','')::int,
+                    NULLIF(wm.meta_json->>'lootAnalysisBonus','')::int,
+                    0
+                  ) AS loot_analysis_bonus
                 FROM character_inventory ci
                 JOIN items i ON i.id = ci.item_id
                 JOIN weapon_mods wm ON wm.item_id = ci.item_id
@@ -314,6 +336,7 @@ class WeaponUpgradeService:
                     reliability_bonus=int(r["reliability_bonus"] or 0),
                     damage_bonus=int(r["damage_bonus"] or 0),
                     armor_pen_bonus=int(r["armor_pen_bonus"] or 0),
+                    loot_analysis_bonus=int(r["loot_analysis_bonus"] or 0),
                 )
             )
         return out
@@ -336,7 +359,12 @@ class WeaponUpgradeService:
                       wm.accuracy_bonus,
                       wm.reliability_bonus,
                       wm.damage_bonus,
-                      wm.armor_pen_bonus
+                      wm.armor_pen_bonus,
+                      COALESCE(
+                        NULLIF(wm.meta_json->>'loot_analysis_bonus','')::int,
+                        NULLIF(wm.meta_json->>'lootAnalysisBonus','')::int,
+                        0
+                      ) AS loot_analysis_bonus
                     FROM character_inventory ci
                     JOIN items i ON i.id = ci.item_id
                     JOIN weapon_mods wm ON wm.item_id = ci.item_id
@@ -364,6 +392,7 @@ class WeaponUpgradeService:
             reliability_bonus=int(r["reliability_bonus"] or 0),
             damage_bonus=int(r["damage_bonus"] or 0),
             armor_pen_bonus=int(r["armor_pen_bonus"] or 0),
+            loot_analysis_bonus=int(r["loot_analysis_bonus"] or 0),
         )
 
     _MODTYPE_LABEL: dict[str, str] = {
@@ -436,14 +465,25 @@ class WeaponUpgradeService:
     def _tier_rank(tier: str) -> int:
         return {"D": 1, "C": 2, "B": 3, "A": 4, "S": 5}.get((tier or "").upper(), 0)
 
+    _IGNORE_IN_NAMING: set[str] = {"rail"}
+
     def _generate_unique_weapon_name(
-            self,
-            base_name: str,
-            mods: list[dict[str, Any]],
-            last_mod_name: str | None = None,
+        self,
+        base_name: str,
+        mods: list[dict[str, Any]],
+        last_mod_name: str | None = None,
     ) -> str:
-        mods_sorted = sorted(mods, key=lambda m: self._MODTYPE_PRIORITY.get(str(m.get("mod_type")), 999))
+        affecting = [
+            m for m in (mods or [])
+            if str(m.get("mod_type", "")).lower() not in self._IGNORE_IN_NAMING
+        ]
+
+        if not affecting:
+            return base_name[:128]
+
+        mods_sorted = sorted(affecting, key=lambda m: self._MODTYPE_PRIORITY.get(str(m.get("mod_type")), 999))
         n = len(mods_sorted)
+
         max_tier = 0
         for m in mods_sorted:
             max_tier = max(max_tier, self._tier_rank(str(m.get("tier", ""))))
@@ -469,6 +509,36 @@ class WeaponUpgradeService:
 
         res = f"{prefix} {base_name}"
         return res[:128]
+    async def _item_name_exists(self, item_type: str, name: str) -> bool:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM items
+                    WHERE item_type = :t AND name = :n
+                    LIMIT 1
+                    """
+                ),
+                {"t": item_type, "n": name},
+            )
+        ).first()
+        return bool(row)
+
+    async def _make_unique_item_name(self, item_type: str, desired: str, max_tries: int = 80) -> str:
+        name = (desired or "")[:128] or "item"
+        zws = "\u200B"  # zero width space
+
+        for _ in range(max_tries):
+            if not await self._item_name_exists(item_type, name):
+                return name
+
+            if len(name) >= 128:
+                name = name[:127] + zws
+            else:
+                name = name + zws
+
+        raise ValueError("Не удалось подобрать уникальное имя предмета")
 
     async def apply_mod(
         self,
@@ -511,6 +581,7 @@ class WeaponUpgradeService:
             "reliability_bonus": 0,
             "damage_bonus": 0,
             "armor_pen_bonus": 0,
+            "loot_analysis_bonus": 0,
         }
 
         qty_before_base = 0
@@ -521,10 +592,15 @@ class WeaponUpgradeService:
         if not mod:
             raise ValueError("Мод не найден в рюкзаке")
 
-        if not mod.is_compatible(weapon.category, base_weapon_id):
+        installed_types = {str(m.get("mod_type", "")).lower() for m in existing_mods}
+
+        if mod.mod_type in ("optic", "scope") and "rail" not in installed_types:
+            raise ValueError("Для установки оптики нужна планка")
+
+        if not mod.is_compatible(weapon.category, base_weapon_id, installed_types=installed_types):
             raise ValueError("Этот мод не подходит к этому оружию")
 
-        if any(str(m.get("mod_type")) == mod.mod_type for m in existing_mods):
+        if any(str(m.get("mod_type")).lower() == str(mod.mod_type).lower() for m in existing_mods):
             raise ValueError("Мод этого типа уже установлен")
 
         new_mods = existing_mods + [mod.to_json()]
@@ -533,6 +609,7 @@ class WeaponUpgradeService:
             "reliability_bonus": int(totals.get("reliability_bonus", 0)) + mod.reliability_bonus,
             "damage_bonus": int(totals.get("damage_bonus", 0)) + mod.damage_bonus,
             "armor_pen_bonus": int(totals.get("armor_pen_bonus", 0)) + mod.armor_pen_bonus,
+            "loot_analysis_bonus": int(totals.get("loot_analysis_bonus", 0)) + mod.loot_analysis_bonus,
         }
 
         new_accuracy = _clamp(weapon.accuracy + mod.accuracy_bonus, 50, 100)
@@ -543,6 +620,7 @@ class WeaponUpgradeService:
         base_weapon = await self.get_weapon(base_weapon_id)
         base_name = base_weapon.name if base_weapon else weapon.name
         new_name = self._generate_unique_weapon_name(base_name=base_name, mods=new_mods, last_mod_name=mod.name)
+        new_name = await self._make_unique_item_name("weapon", new_name)
 
         meta = {
             "kind": "unique_weapon",
@@ -626,8 +704,6 @@ class WeaponUpgradeService:
             {"wid": new_weapon_id, "cid": character_id},
         )
 
-        # 1 – старое оружие должно быть потрачено
-        # 2 – если при смене экипировки где-то добавилась лишняя копия, лишнее удаляем
         qty_after_current = await self._get_inventory_qty(character_id, current_weapon_id)
         target_current = max(qty_before_current - 1, 0)
         if qty_after_current > target_current:

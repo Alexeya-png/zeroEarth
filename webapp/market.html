@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Market</title>
+  <style>
+    :root{
+      --bg: #0f131a;
+      --card: #151b24;
+      --card2:#111823;
+      --text: #e7eefc;
+      --muted: #9fb0c9;
+      --stroke: rgba(255,255,255,.08);
+      --accent: #4aa3ff;
+      --warn: #ffcc66;
+      --radius: 16px;
+      --pad: 14px;
+      --sans: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+    }
+
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    .wrap{
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 14px 12px 24px;
+      padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .card{
+      background: var(--card);
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius);
+      padding: var(--pad);
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .title{
+      display:flex;
+      gap: 12px;
+      align-items:flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    h1{
+      margin:0;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: .2px;
+    }
+
+    .sub{
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .badges{
+      margin-top: 10px;
+      display:flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .badge{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .badge.tier{
+      border-color: rgba(74,163,255,.35);
+      background: rgba(74,163,255,.08);
+      color: #cfe6ff;
+      font-weight: 600;
+    }
+
+    .section{
+      margin-top: 12px;
+      border-top: 1px solid var(--stroke);
+      padding-top: 12px;
+    }
+
+    .section h2{
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: .2px;
+      text-transform: uppercase;
+    }
+
+    .rows{
+      display:flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .row{
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      background: rgba(0,0,0,.12);
+    }
+
+    .row.active{
+      border-color: rgba(74,163,255,.35);
+      background: rgba(74,163,255,.08);
+    }
+
+    .k{
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 18px;
+      text-align: right;
+    }
+
+    .v{
+      font-size: 14px;
+      font-weight: 600;
+      text-align: left;
+      flex: 1;
+    }
+
+    .v.mono{
+      font-family: var(--mono);
+      font-weight: 700;
+      letter-spacing: .2px;
+    }
+
+    .row.stars{
+      border-color: rgba(255,204,102,.28);
+      background: rgba(255,204,102,.08);
+    }
+
+    .btn{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .btn:active{ transform: translateY(1px); }
+
+    .btnSmall{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 9px 10px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btnSmall:active{ transform: translateY(1px); }
+
+    .inputRow{
+      display:flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .inp{
+      flex: 1;
+      border: 1px solid var(--stroke);
+      background: rgba(0,0,0,.18);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .loading{
+      color: var(--muted);
+      padding: 24px 6px;
+      text-align:center;
+    }
+
+    .err{
+      color: #ff9a9a;
+      font-size: 13px;
+      margin-top: 6px;
+      text-align:center;
+    }
+
+    .link{
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .link:active{ opacity: .8; }
+
+    .pill{
+      display:inline-block;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      border-radius: 999px;
+      padding: 6px 9px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-left: 8px;
+      white-space: nowrap;
+    }
+
+    .modalBg{
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      display:none;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 10px 12px;
+      padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .modal{
+      width: 100%;
+      max-width: 560px;
+      background: var(--card2);
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.35);
+    }
+
+    .modalTop{
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .modalTitle{
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .xBtn{
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      font-size: 18px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" id="app">
+      <div class="loading">Загрузка…</div>
+    </div>
+  </div>
+
+  <div class="modalBg" id="modalBg">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modalTop">
+        <div class="modalTitle" id="modalTitle">Калибр</div>
+        <button class="xBtn" id="modalClose">×</button>
+      </div>
+      <div class="rows" id="modalRows"></div>
+    </div>
+  </div>
+
+  <script>
+    function escapeHtml(s){
+      return String(s ?? "")
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#39;");
+    }
+
+    function num(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return String(n);
+    }
+
+    function numSigned(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      if (n > 0) return "+" + n;
+      return String(n);
+    }
+
+    function kg(v){
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return (Math.round(n * 100) / 100).toFixed(2).replaceAll(".00","") + " кг";
+    }
+
+    function money(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return n.toLocaleString("ru-RU") + " ⟡";
+    }
+
+    function stars(v){
+      if (v == null) return "–";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "–";
+      return n.toLocaleString("ru-RU") + " ⭐";
+    }
+
+    function tierFrom(item){
+      return item?.equipment_stats?.tier || item?.weapon_mod?.tier || item?.quality_tier || "–";
+    }
+
+    function tagType(item){
+      const t = String(item?.item_type || "–").toLowerCase();
+      if (t === "weapon") return "weapon";
+      if (t === "ammo") return "ammo";
+      if (t === "head") return "head";
+      if (t === "body") return "body";
+      if (t === "gloves") return "gloves";
+      if (t === "boots") return "boots";
+      return t || "misc";
+    }
+
+    function row(k, v, cls="", active=false){
+      return `
+        <div class="row ${cls} ${active ? "active" : ""}">
+          <div class="k">${escapeHtml(k)}</div>
+          <div class="v">${escapeHtml(v)}</div>
+        </div>
+      `;
+    }
+
+    function rowHtml(k, vHtml, cls="", active=false){
+      return `
+        <div class="row ${cls} ${active ? "active" : ""}">
+          <div class="k">${escapeHtml(k)}</div>
+          <div class="v">${vHtml}</div>
+        </div>
+      `;
+    }
+
+    function section(title, rowsHtml){
+      if (!rowsHtml) return "";
+      return `
+        <div class="section">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="rows">${rowsHtml}</div>
+        </div>
+      `;
+    }
+
+    function bonusKeyRu(k){
+      const m = {
+        accuracy_bonus: "Точность",
+        reliability_bonus: "Надежность",
+        damage_bonus: "Урон",
+        armor_pen_bonus: "Пробитие",
+        stealth_bonus: "Скрытность",
+        carry_capacity_bonus: "Переноска",
+        loot_analysis_bonus: "Распознавание предметов",
+        armor: "Броня"
+      };
+      return m[k] || k;
+    }
+
+    function showModal(title, rowsHtmlArr){
+      const bg = document.getElementById("modalBg");
+      const t = document.getElementById("modalTitle");
+      const rows = document.getElementById("modalRows");
+      t.textContent = title;
+      rows.innerHTML = rowsHtmlArr.join("");
+      bg.style.display = "flex";
+    }
+
+    function hideModal(){
+      document.getElementById("modalBg").style.display = "none";
+    }
+
+    document.getElementById("modalClose").addEventListener("click", hideModal);
+    document.getElementById("modalBg").addEventListener("click", (e) => {
+      if (e.target.id === "modalBg") hideModal();
+    });
+
+    async function fetchJson(url){
+      try{
+        const r = await fetch(url, {cache:"no-store"});
+        const j = await r.json();
+        return j;
+      }catch(e){
+        return null;
+      }
+    }
+
+    function normalizeItemType(t){
+      const s = String(t || "misc").trim();
+      if (!s) return "misc";
+      return s;
+    }
+
+    function isMiscType(t){
+      return String(t || "").trim().toLowerCase() === "misc";
+    }
+
+    function normalizeMarketItem(raw){
+      const id = Number(raw?.item_id ?? raw?.itemId ?? raw?.id ?? raw?.item ?? 0);
+      if (!Number.isFinite(id) || id <= 0) return null;
+
+      const name = String(raw?.name ?? raw?.item_name ?? raw?.itemName ?? "Предмет").trim() || "Предмет";
+      const item_type = normalizeItemType(raw?.item_type ?? raw?.itemType ?? raw?.type ?? "misc");
+      const tier = String(raw?.tier ?? raw?.quality_tier ?? "").trim();
+      const lots_count = Number(raw?.lots_count ?? raw?.count ?? raw?.lots ?? raw?.cnt ?? 0);
+      const qty_total = Number(raw?.qty_total ?? raw?.qty ?? raw?.total_qty ?? 0);
+
+      return {
+        item_id: id,
+        name,
+        item_type,
+        tier,
+        lots_count: Number.isFinite(lots_count) ? lots_count : 0,
+        qty_total: Number.isFinite(qty_total) ? qty_total : 0
+      };
+    }
+
+    function groupItemsFromListings(listings){
+      const by = new Map();
+      for (const l of (listings || [])){
+        const itemId = Number(l?.item_id ?? l?.itemId ?? l?.item ?? l?.itemID ?? 0);
+        if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
+        const prev = by.get(itemId) || {
+          item_id: itemId,
+          name: String(l?.item_name ?? l?.itemName ?? l?.name ?? "Предмет").trim() || "Предмет",
+          item_type: normalizeItemType(l?.item_type ?? l?.itemType ?? l?.type ?? "misc"),
+          tier: String(l?.tier ?? "").trim(),
+          lots_count: 0,
+          qty_total: 0
+        };
+
+        prev.lots_count += 1;
+
+        const q = Number(l?.qty ?? l?.quantity ?? 0);
+        if (Number.isFinite(q)) prev.qty_total += q;
+
+        if (!prev.tier){
+          const t2 = String(l?.tier ?? "").trim();
+          if (t2) prev.tier = t2;
+        }
+
+        by.set(itemId, prev);
+      }
+      return Array.from(by.values());
+    }
+
+    async function apiMarketItems(){
+      let j = await fetchJson("/api/market/items");
+      if (j && j.ok && Array.isArray(j.items)){
+        const items = j.items.map(normalizeMarketItem).filter(Boolean);
+        return {ok:true, items};
+      }
+
+      j = await fetchJson("/api/market/listings");
+      if (j && j.ok && Array.isArray(j.listings)){
+        const grouped = groupItemsFromListings(j.listings);
+        return {ok:true, items: grouped.map(normalizeMarketItem).filter(Boolean)};
+      }
+
+      return {ok:false, error: (j && j.error) ? String(j.error) : "Нет данных"};
+    }
+
+    async function apiItem(itemId){
+      const j = await fetchJson(`/api/item?id=${encodeURIComponent(itemId)}`);
+      if (!j || !j.ok || !j.item) return null;
+      return j.item;
+    }
+
+    async function apiLots(itemId){
+      const j = await fetchJson(`/api/market/listings?item_id=${encodeURIComponent(itemId)}`);
+      if (!j || !j.ok || !Array.isArray(j.listings)) return [];
+      return j.listings;
+    }
+
+    async function apiLot(lotId){
+      const j = await fetchJson(`/api/market/lot?id=${encodeURIComponent(lotId)}`);
+      if (!j || !j.ok || !j.lot) return null;
+      return j;
+    }
+
+    function renderItemCommon(item, opts){
+      const type = tagType(item);
+      const tier = tierFrom(item);
+
+      const badges = [
+        `<span class="badge">${escapeHtml(type)}</span>`
+      ];
+
+      if (!isMiscType(type)){
+        badges.push(`<span class="badge tier">Tier ${escapeHtml(tier)}</span>`);
+      }
+
+      const market = item.market || {};
+      const avg = market.avg_price != null ? money(market.avg_price) : "–";
+      const starsAvg = market.stars_avg_price != null ? stars(market.stars_avg_price) : null;
+
+      const top = `
+        <div class="title">
+          <div>
+            <h1>${escapeHtml(item.name || "Предмет")}</h1>
+            <div class="sub">ID – ${escapeHtml(item.id)}</div>
+            <div class="badges">${badges.join("")}</div>
+          </div>
+          ${opts?.rightHtml || ""}
+        </div>
+      `;
+
+      let html = top;
+
+      if (!opts?.hideMarket){
+        html += section(
+          "Рынок",
+          row("Средняя цена на рынке", avg) +
+          (starsAvg ? row("Средняя цена на рынке Звезды", starsAvg, "stars") : "") +
+          row("Активных лотов", String(Number(market.count ?? 0)))
+        );
+      }
+
+      return html;
+    }
+
+    function renderItemStats(item){
+      const type = tagType(item);
+      const eq = item.equipment_stats;
+      const w = item.weight_kg;
+
+      let html = "";
+
+      if (type === "head" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к распознаванию предметов", numSigned(eq.loot_analysis_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "body" && eq){
+        const stealth = Number(eq.stealth_bonus ?? 0);
+        const stealthLabel = stealth < 0 ? "Штраф к скрытности" : "Бонус к скрытности";
+        html += section(
+          "Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к переноске", numSigned(eq.carry_capacity_bonus)) +
+          row(stealthLabel, numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "gloves" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к точности", numSigned(eq.accuracy_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "boots" && eq){
+        html += section(
+          "Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к скрытности", numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "ammo"){
+        const a = item.ammo_stats || {};
+        html += section(
+          "Характеристики патронов",
+          row("Урон", a.damage != null ? String(a.damage) : "–") +
+          row("Пробитие", a.armor_penetration != null ? String(a.armor_penetration) : "–") +
+          row("Вес", kg(w))
+        );
+      } else if (type === "weapon"){
+        const caliber = item.caliber?.code || item.caliber?.name;
+        const caliberHtml = caliber
+          ? `<a class="link" data-caliber="${escapeHtml(caliber)}">${escapeHtml(caliber)}</a>`
+          : "–";
+
+        html += section(
+          "Характеристики оружия",
+          row("Точность", item.accuracy != null ? String(item.accuracy) : "–") +
+          row("Надежность", item.reliability != null ? String(item.reliability) + "%" : "–") +
+          rowHtml("Калибр", caliberHtml) +
+          row("Вес", kg(w))
+        );
+
+        const u = item.weapon_unique;
+        const bonus = u?.total_bonus || {};
+        const bonusKeys = Object.keys(bonus || {}).filter(k => {
+          const v = bonus[k];
+          if (v == null) return false;
+          const n = Number(v);
+          return Number.isFinite(n) && n !== 0;
+        });
+
+        if (bonusKeys.length){
+          const rows = bonusKeys.map(k => row(bonusKeyRu(k), numSigned(bonus[k]))).join("");
+          html += section("Дополнительные бонусы от модулей", rows);
+        }
+
+        const mods = u?.mods || [];
+        if (mods.length){
+          const rows = mods.map(m => {
+            const parts = [];
+            if (Number(m.accuracy_bonus || 0) !== 0) parts.push("точность " + numSigned(m.accuracy_bonus));
+            if (Number(m.reliability_bonus || 0) !== 0) parts.push("надежность " + numSigned(m.reliability_bonus));
+            if (Number(m.damage_bonus || 0) !== 0) parts.push("урон " + numSigned(m.damage_bonus));
+            if (Number(m.armor_pen_bonus || 0) !== 0) parts.push("пробитие " + numSigned(m.armor_pen_bonus));
+            const tail = parts.length ? " – " + parts.join(", ") : "";
+            const name = escapeHtml(m.name || ("Мод " + m.id)) + tail;
+
+            const mid = Number(m.id || 0);
+            if (mid > 0){
+              return rowHtml("Модуль", `<a class="link" data-open-item="${escapeHtml(mid)}">${name}</a>`);
+            }
+            return row("Модуль", escapeHtml(m.name || "Модуль") + (parts.length ? " – " + parts.join(", ") : ""));
+          }).join("");
+
+          html += section("Список модулей", rows);
+        }
+      }
+
+      const mod = item.weapon_mod;
+      if (mod){
+        html += section(
+          "Характеристики модуля",
+          row("Тип", mod.mod_type || "–") +
+          row("Tier", mod.tier || "–") +
+          row("Бонус к точности", numSigned(mod.accuracy_bonus)) +
+          row("Бонус к надежности", numSigned(mod.reliability_bonus)) +
+          row("Бонус к урону", numSigned(mod.damage_bonus)) +
+          row("Бонус к пробитию", numSigned(mod.armor_pen_bonus)) +
+          row("Вес", kg(w))
+        );
+      }
+
+      if (!eq && type !== "weapon" && type !== "ammo" && !mod){
+        html += section("Характеристики", row("Вес", kg(w)) + row("Цена", money(item.price)));
+      }
+
+      return html;
+    }
+
+    function bindLinks(app){
+      app.querySelectorAll("[data-open-item]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-open-item");
+          if (!id) return;
+          openItem(id);
+        });
+      });
+
+      app.querySelectorAll("[data-caliber]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const code = el.getAttribute("data-caliber");
+          if (!code) return;
+          showModal("Калибр", [row("Код", code)]);
+        });
+      });
+
+      app.querySelectorAll("[data-market-item]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-market-item");
+          if (!id) return;
+          openItem(id);
+        });
+      });
+
+      app.querySelectorAll("[data-lot]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-lot");
+          if (!id) return;
+          openLot(id);
+        });
+      });
+
+      const back = app.querySelector("[data-back]");
+      if (back){
+        back.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          openItems();
+        });
+      }
+
+      const refresh = app.querySelector("[data-refresh]");
+      if (refresh){
+        refresh.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const st = getStartState();
+          if (st?.view === "item") loadItem(st.id, {preserveLot:true});
+          else loadItems();
+        });
+      }
+
+      const search = app.querySelector("#q");
+      if (search){
+        search.addEventListener("input", () => {
+          renderItemsFiltered();
+        });
+      }
+    }
+
+    let _itemsCache = [];
+    let _itemsFiltered = [];
+
+    function renderItemsFiltered(){
+      const app = document.getElementById("app");
+      const q = (app.querySelector("#q")?.value || "").trim().toLowerCase();
+
+      if (!q){
+        _itemsFiltered = _itemsCache.slice();
+      } else {
+        _itemsFiltered = _itemsCache.filter(it => {
+          const name = String(it.name || "").toLowerCase();
+          const type = String(it.item_type || "").toLowerCase();
+          const tier = String(it.tier || "").toLowerCase();
+          return name.includes(q) || type.includes(q) || tier.includes(q);
+        });
+      }
+
+      const listHtml = renderItemsRows(_itemsFiltered);
+      const listHost = app.querySelector("#itemsRows");
+      if (listHost) listHost.innerHTML = listHtml;
+      bindLinks(app);
+    }
+
+    function renderItemsRows(items){
+      if (!items || !items.length){
+        return row("–", "Ничего нет");
+      }
+
+      return items.map((it, idx) => {
+        const name = escapeHtml(it.name || "Предмет");
+        const id = String(it.item_id);
+        const type = String(it.item_type || "misc").trim() || "misc";
+        const tier = String(it.tier || "").trim();
+
+        const bits = [];
+        if (!isMiscType(type) && tier){
+          bits.push(escapeHtml(tier));
+        }
+        bits.push(escapeHtml(type));
+
+        const tail = bits.length ? (" – " + bits.join(" – ")) : "";
+        const cnt = Number(it.lots_count || 0);
+        const pill = cnt > 0 ? `<span class="pill">лотов ${escapeHtml(cnt)}</span>` : "";
+
+        const line = `<a class="link" data-market-item="${escapeHtml(id)}">${name}</a>${pill}${tail}`;
+        return rowHtml(String(idx + 1), line);
+      }).join("");
+    }
+
+    function renderItemsView(items){
+      const app = document.getElementById("app");
+
+      const top = `
+        <div class="title">
+          <div>
+            <h1>Market</h1>
+            <div class="sub">Выбери товар, чтобы увидеть лоты</div>
+          </div>
+          <button class="btnSmall" data-refresh>Обновить</button>
+        </div>
+      `;
+
+      const search = `
+        <div class="inputRow" style="margin-top: 0;">
+          <input id="q" class="inp" placeholder="Поиск по названию, типу, тиру" />
+        </div>
+      `;
+
+      const rowsHtml = renderItemsRows(items);
+
+      const listSection = `
+        <div class="section">
+          <h2>Товары на рынке</h2>
+          <div class="rows" id="itemsRows">${rowsHtml}</div>
+        </div>
+      `;
+
+      app.innerHTML = top + search + listSection;
+      bindLinks(app);
+    }
+
+    function renderLotsView(item, lots, selectedLotId, selectedLotDetails){
+      const app = document.getElementById("app");
+
+      const right = `<button class="btnSmall" data-back>Назад</button>`;
+      let html = renderItemCommon(item, {rightHtml: right});
+
+      const rows = (lots || []).map((l, idx) => {
+        const lotId = String(l.id ?? "");
+        const qty = Number(l.qty || 0);
+        const price = l.price != null ? money(l.price) : "–";
+        const line = `${escapeHtml(item.name || "Предмет")} – ×${escapeHtml(qty)} – ${escapeHtml(price)}`;
+        const isActive = selectedLotId && String(selectedLotId) === lotId;
+        return rowHtml(String(idx + 1), `<a class="link" data-lot="${escapeHtml(lotId)}">${line}</a>`, "", isActive);
+      }).join("");
+
+      html += section("Лоты", rows || row("–", "Нет"));
+
+      if (selectedLotId){
+        if (!selectedLotDetails){
+          html += section("Лот", row("–", "Загрузка…"));
+        } else {
+          const lot = selectedLotDetails;
+          html += section(
+            "Лот",
+            row("Лот", String(lot.id)) +
+            row("Количество", "×" + String(Number(lot.qty || 0))) +
+            row("Цена", money(lot.price)) +
+            row("Продавец", lot.seller_tg_id ? String(lot.seller_tg_id) : "–") +
+            row("Выставлен", lot.created_at ? String(lot.created_at) : "–")
+          );
+        }
+      } else {
+        html += section("Лот", row("–", "Выбери лот из списка"));
+      }
+
+      html += renderItemStats(item);
+
+      app.innerHTML = html;
+      bindLinks(app);
+    }
+
+    async function loadItems(){
+      const app = document.getElementById("app");
+      app.innerHTML = `<div class="loading">Загрузка…</div>`;
+
+      const res = await apiMarketItems();
+      if (!res.ok){
+        app.innerHTML = `
+          <div class="loading">Не найдено</div>
+          <div class="err">${escapeHtml(res.error || "Ошибка запроса")}</div>
+        `;
+        return;
+      }
+
+      _itemsCache = (res.items || []).slice().sort((a,b) => String(a.name||"").localeCompare(String(b.name||""), "ru"));
+      _itemsFiltered = _itemsCache.slice();
+      renderItemsView(_itemsCache);
+    }
+
+    async function loadItem(itemId, opts){
+      const app = document.getElementById("app");
+      app.innerHTML = `<div class="loading">Загрузка…</div>`;
+
+      const [item, lots] = await Promise.all([apiItem(itemId), apiLots(itemId)]);
+
+      if (!item){
+        app.innerHTML = `
+          <div class="loading">Не найдено</div>
+          <div class="err">Ошибка запроса</div>
+        `;
+        return;
+      }
+
+      const st = getStartState();
+      const lotId = (opts?.preserveLot ? (st?.lot || null) : (st?.lot || null));
+
+      if (lotId){
+        renderLotsView(item, lots, lotId, null);
+        const jr = await apiLot(lotId);
+        if (jr && jr.ok && jr.lot){
+          renderLotsView(item, lots, lotId, jr.lot);
+        } else {
+          renderLotsView(item, lots, lotId, {id:lotId, qty:"–", price:null, seller_tg_id:null, created_at:null});
+        }
+        return;
+      }
+
+      renderLotsView(item, lots, null, null);
+    }
+
+    async function loadLotInItem(itemId, lotId){
+      const app = document.getElementById("app");
+      app.innerHTML = `<div class="loading">Загрузка…</div>`;
+
+      const [item, lots] = await Promise.all([apiItem(itemId), apiLots(itemId)]);
+      if (!item){
+        app.innerHTML = `
+          <div class="loading">Не найдено</div>
+          <div class="err">Ошибка запроса</div>
+        `;
+        return;
+      }
+
+      renderLotsView(item, lots, lotId, null);
+
+      const jr = await apiLot(lotId);
+      if (jr && jr.ok && jr.lot){
+        renderLotsView(item, lots, lotId, jr.lot);
+      } else {
+        renderLotsView(item, lots, lotId, {id:lotId, qty:"–", price:null, seller_tg_id:null, created_at:null});
+      }
+    }
+
+    async function loadLotOnly(lotId){
+      const app = document.getElementById("app");
+      app.innerHTML = `<div class="loading">Загрузка…</div>`;
+
+      const jr = await apiLot(lotId);
+      if (!jr || !jr.ok || !jr.item || !jr.lot){
+        app.innerHTML = `
+          <div class="loading">Не найдено</div>
+          <div class="err">${escapeHtml(jr?.error || "Ошибка запроса")}</div>
+        `;
+        return;
+      }
+
+      const item = jr.item;
+      const lots = await apiLots(item.id);
+      renderLotsView(item, lots, lotId, jr.lot);
+    }
+
+    function openItems(opts){
+      const url = new URL(window.location.href);
+      url.searchParams.delete("id");
+      url.searchParams.delete("lot");
+      url.searchParams.delete("startapp");
+      const st = {view:"items"};
+      if (opts?.replace) history.replaceState(st, "", url.toString());
+      else history.pushState(st, "", url.toString());
+      loadItems();
+    }
+
+    function openItem(itemId, opts){
+      const url = new URL(window.location.href);
+      url.searchParams.set("id", String(itemId));
+      url.searchParams.delete("lot");
+      const st = {view:"item", id:String(itemId)};
+      if (opts?.replace) history.replaceState(st, "", url.toString());
+      else history.pushState(st, "", url.toString());
+      loadItem(itemId, {preserveLot:false});
+    }
+
+    function openLot(lotId, opts){
+      const p = new URLSearchParams(window.location.search);
+      const itemId = p.get("id");
+
+      if (itemId && /^\\d+$/.test(itemId)){
+        const url = new URL(window.location.href);
+        url.searchParams.set("id", String(itemId));
+        url.searchParams.set("lot", String(lotId));
+        const st = {view:"item", id:String(itemId), lot:String(lotId)};
+        if (opts?.replace) history.replaceState(st, "", url.toString());
+        else history.pushState(st, "", url.toString());
+        loadLotInItem(itemId, lotId);
+        return;
+      }
+
+      const url = new URL(window.location.href);
+      url.searchParams.set("lot", String(lotId));
+      const st = {view:"lot", lot:String(lotId)};
+      if (opts?.replace) history.replaceState(st, "", url.toString());
+      else history.pushState(st, "", url.toString());
+      loadLotOnly(lotId);
+    }
+
+    function getStartState(){
+      const p = new URLSearchParams(window.location.search);
+
+      const lot = p.get("lot");
+      if (lot && /^\\d+$/.test(lot)){
+        const id = p.get("id");
+        if (id && /^\\d+$/.test(id)) return {view:"item", id, lot};
+        return {view:"lot", lot};
+      }
+
+      const id = p.get("id");
+      if (id && /^\\d+$/.test(id)) return {view:"item", id};
+
+      const sp = p.get("tgWebAppStartParam") || p.get("startapp");
+      if (sp && /^l\\d+$/.test(sp)) return {view:"lot", lot: sp.slice(1)};
+      if (sp && /^i\\d+$/.test(sp)) return {view:"item", id: sp.slice(1)};
+
+      return {view:"items"};
+    }
+
+    function renderFallbackOpenById(){
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <div>
+          <div class="title">
+            <div>
+              <h1>Market</h1>
+              <div class="sub">Нет списка товаров</div>
+            </div>
+            <button class="btnSmall" data-back>Назад</button>
+          </div>
+
+          <div class="inputRow">
+            <input id="iid" class="inp" inputmode="numeric" placeholder="ID предмета" />
+            <button id="go" class="btn">Открыть</button>
+          </div>
+
+          <div class="sub" style="margin-top:10px;">Для теста в браузере – /market?id=405</div>
+        </div>
+      `;
+
+      document.getElementById("go").addEventListener("click", () => {
+        const v = document.getElementById("iid").value.trim();
+        if (!/^\\d+$/.test(v)) return;
+        openItem(v);
+      });
+
+      bindLinks(app);
+    }
+
+    try{
+      if (window.Telegram && Telegram.WebApp){
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        const tp = Telegram.WebApp.themeParams || {};
+        if (tp.bg_color) document.documentElement.style.setProperty("--bg", tp.bg_color);
+        if (tp.text_color) document.documentElement.style.setProperty("--text", tp.text_color);
+        if (tp.hint_color) document.documentElement.style.setProperty("--muted", tp.hint_color);
+        if (tp.button_color) document.documentElement.style.setProperty("--accent", tp.button_color);
+      }
+    }catch(e){}
+
+    const first = getStartState();
+
+    if (first.view === "lot"){
+      loadLotOnly(first.lot);
+    } else if (first.view === "item"){
+      loadItem(first.id, {preserveLot:true});
+    } else {
+      loadItems().catch(() => renderFallbackOpenById());
+    }
+
+    window.addEventListener("popstate", () => {
+      const s = getStartState();
+      if (s.view === "lot") loadLotOnly(s.lot);
+      else if (s.view === "item"){
+        if (s.lot) loadLotInItem(s.id, s.lot);
+        else loadItem(s.id, {preserveLot:false});
+      } else loadItems().catch(() => renderFallbackOpenById());
+    });
+  </script>
+</body>
+</html>

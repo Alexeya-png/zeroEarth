@@ -1,3 +1,5 @@
+# modules/raids/engine.py — заменить файл целиком
+
 from __future__ import annotations
 
 import asyncio
@@ -9,14 +11,88 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from aiogram import Bot
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core.mechanics.clash import simulate_clash_round, InjuryState
+from core.mechanics.clash import InjuryState, simulate_clash_round
 from core.mechanics.shooting import calc_shooting_model, simulate_series
 
 _RNG = random.Random()
 LOG = logging.getLogger(__name__)
+
+_NOTIFY_DEFAULT_KINDS: set[str] = {
+    "fight_started",
+    "ammo_empty",
+    "corpse_search",
+    "item_found",
+    "exit_started",
+    "raid_finished",
+    "raid_dead",
+}
+
+
+def _event_text(kind: str, payload: dict) -> str:
+    try:
+        if kind == "travel_started":
+            pt = str(payload.get("point_name") or "")
+            if not pt:
+                pid = payload.get("point_id")
+                if pid is not None:
+                    pt = f"Точка {int(pid)}"
+            return f"Переход к {pt}".strip()
+        if kind == "search_started":
+            pt = str(payload.get("point_name") or "")
+            if not pt:
+                pid = payload.get("point_id")
+                if pid is not None:
+                    pt = f"Точка {int(pid)}"
+            return f"Начинает поиск на {pt}".strip()
+        if kind == "heard_shots":
+            return "Слышит стрельбу неподалёку."
+        if kind == "fight_started":
+            opp = str(payload.get("opponent_name") or "противником")
+            return f"Вступает в бой с {opp}."
+        if kind == "ammo_empty":
+            wn = payload.get("weapon_name")
+            if wn:
+                return f"Закончились патроны – {wn}."
+            return "Закончились патроны."
+        if kind == "item_found":
+            nm = str(payload.get("item_name") or "предмет")
+            qty = int(payload.get("qty") or 1)
+            return f"Находит: {nm} x{qty}."
+        if kind == "corpse_search":
+            victim = str(payload.get("victim_name") or "цель")
+            found = str(payload.get("found_line") or "")
+            if found:
+                return f"Обыскивает {victim}. Находит: {found}."
+            return f"Обыскивает {victim}."
+        if kind == "fight_finished":
+            outcome = str(payload.get("outcome") or "")
+            if outcome == "kill":
+                target = payload.get("loser_name") or "противника"
+                return f"Бой окончен. Убивает {target}."
+            if outcome == "mutual_kill":
+                return "Бой окончен. Оба бойца погибли."
+            return "Бой окончен."
+        if kind == "exit_started":
+            return "Начинает выход из рейда."
+        if kind == "raid_finished":
+            return "Рейд завершён."
+        if kind == "raid_dead":
+            return "Рейд провален – персонаж погиб."
+    except Exception:
+        pass
+    return ""
+
+
+async def _delete_message_later(bot: Bot, chat_id: int, message_id: int, delay_seconds: int = 60) -> None:
+    try:
+        await asyncio.sleep(max(1, int(delay_seconds)))
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        return
 
 
 def _utcnow() -> datetime:
@@ -99,8 +175,6 @@ class RaidsEngine:
 
     async def tick(self) -> None:
         now = _utcnow()
-
-        # Natural HP recovery – 1 HP per 10 minutes, only outside active raids.
         await self._apply_natural_recovery(now)
         await self._resolve_finished_fights(now)
         await self._advance_travel(now)
@@ -108,10 +182,7 @@ class RaidsEngine:
         await self._finish_searches(now)
         await self._finish_exits(now)
 
-
     async def _apply_natural_recovery(self, now: datetime) -> None:
-        # 1 HP per 10 minutes, computed in full 10 minute intervals since character_health.updated_at.
-        # Does not run for characters in active raids.
         await self.db.execute(
             text(
                 """
@@ -157,7 +228,6 @@ class RaidsEngine:
             ),
             {"now": now},
         )
-
 
     async def _advance_travel(self, now: datetime) -> None:
         rows = await self.db.execute(
@@ -207,8 +277,8 @@ class RaidsEngine:
                 point_id,
                 presence_id,
                 None,
-                "arrived",
-                {"search_eta_at": eta.isoformat()},
+                "search_started",
+                {"search_eta_at": eta.isoformat(), "point_id": int(point_id)},
             )
 
     async def _maybe_start_fights(self, now: datetime) -> None:
@@ -265,6 +335,19 @@ class RaidsEngine:
         a_char = int(a["character_id"])
         b_char = int(b["character_id"])
 
+        nmq = await self.db.execute(
+            text("SELECT id, name FROM characters WHERE id = ANY(:ids)"),
+            {"ids": [a_char, b_char]},
+        )
+        names: dict[int, str] = {}
+        for r in nmq.mappings().all():
+            try:
+                names[int(r["id"])] = str(r.get("name") or f"#{int(r['id'])}")
+            except Exception:
+                continue
+        a_name = names.get(a_char) or f"#{a_char}"
+        b_name = names.get(b_char) or f"#{b_char}"
+
         duration_seconds = _env_int("RAID_FIGHT_SECONDS", 300)
         ends_at = now + timedelta(seconds=duration_seconds)
         fight_raid_id = min(a_raid_id, b_raid_id)
@@ -311,8 +394,52 @@ class RaidsEngine:
             {"ids": [a_presence_id, b_presence_id]},
         )
 
-        await self._log(a_raid_id, a_char, point_id, a_presence_id, fight_id, "fight_started", {"ends_at": ends_at.isoformat()})
-        await self._log(b_raid_id, b_char, point_id, b_presence_id, fight_id, "fight_started", {"ends_at": ends_at.isoformat()})
+        await self._log(
+            a_raid_id,
+            a_char,
+            point_id,
+            a_presence_id,
+            fight_id,
+            "fight_started",
+            {"ends_at": ends_at.isoformat(), "opponent_id": b_char, "opponent_name": b_name, "notify": True},
+        )
+        await self._log(
+            b_raid_id,
+            b_char,
+            point_id,
+            b_presence_id,
+            fight_id,
+            "fight_started",
+            {"ends_at": ends_at.isoformat(), "opponent_id": a_char, "opponent_name": a_name, "notify": True},
+        )
+
+        others = await self.db.execute(
+            text(
+                """
+                SELECT rp.id AS presence_id, rp.raid_id, rp.character_id
+                FROM raid_point_presence rp
+                JOIN raids r ON r.id = rp.raid_id
+                WHERE r.status = 'active'
+                  AND rp.point_id = :point_id
+                  AND rp.state = 'searching'
+                  AND rp.is_in_combat = false
+                """
+            ),
+            {"point_id": point_id},
+        )
+        for o in others.mappings().all():
+            try:
+                await self._log(
+                    int(o["raid_id"]),
+                    int(o["character_id"]),
+                    point_id,
+                    int(o["presence_id"]),
+                    fight_id,
+                    "heard_shots",
+                    {"fighters": [a_name, b_name], "notify": False},
+                )
+            except Exception:
+                continue
 
     async def _resolve_finished_fights(self, now: datetime) -> None:
         fights = await self.db.execute(
@@ -401,8 +528,12 @@ class RaidsEngine:
                 await self._end_fight_as_canceled(fight_id, now, [a_presence_id, b_presence_id])
                 continue
 
-            a_no_ammo = await self._consume_battle_ammo(a_char)
-            b_no_ammo = await self._consume_battle_ammo(b_char)
+            a_no_ammo = await self._consume_battle_ammo(
+                a_char, raid_id=a_raid_id, point_id=point_id, presence_id=a_presence_id, fight_id=fight_id
+            )
+            b_no_ammo = await self._consume_battle_ammo(
+                b_char, raid_id=b_raid_id, point_id=point_id, presence_id=b_presence_id, fight_id=fight_id
+            )
 
             if a_no_ammo:
                 b_state, a_state = await self._apply_guaranteed_shots(attacker=b_state, target=a_state)
@@ -530,6 +661,8 @@ class RaidsEngine:
                     "winner": winner_char_id,
                     "loser": loser_char_id,
                     "hp": {"a": int(a_after.hp_current), "b": int(b_after.hp_current)},
+                    "log": fight_lines[:25],
+                    "notify": False,
                 },
             )
             await self._log(
@@ -538,12 +671,21 @@ class RaidsEngine:
                 point_id,
                 None,
                 fight_id,
-                "fight_finished",
                 {
                     "outcome": outcome,
                     "winner": winner_char_id,
                     "loser": loser_char_id,
                     "hp": {"a": int(a_after.hp_current), "b": int(b_after.hp_current)},
+                    "log": fight_lines[:25],
+                    "notify": False,
+                }["outcome"] and "fight_finished",  # keep static type happy
+                {
+                    "outcome": outcome,
+                    "winner": winner_char_id,
+                    "loser": loser_char_id,
+                    "hp": {"a": int(a_after.hp_current), "b": int(b_after.hp_current)},
+                    "log": fight_lines[:25],
+                    "notify": False,
                 },
             )
 
@@ -557,74 +699,6 @@ class RaidsEngine:
                 text("UPDATE raid_point_presence SET is_in_combat = false WHERE id = ANY(:ids)"),
                 {"ids": presence_ids},
             )
-
-    async def _leave_point_after_fight(
-        self,
-        presence_id: int,
-        raid_id: int,
-        character_id: int,
-        point_id: int,
-        fight_started_at: datetime,
-        now: datetime,
-    ) -> None:
-        started = await self.db.execute(
-            text("SELECT search_started_at FROM raid_point_presence WHERE id = :id"),
-            {"id": presence_id},
-        )
-        search_started_at = started.scalar()
-        minutes_here = 1
-        if search_started_at:
-            minutes_here = max(1, int((fight_started_at - search_started_at).total_seconds() // 60))
-
-        r = await self.db.execute(
-            text("SELECT search_minutes_spent, search_limit_minutes, location_id, search_goal FROM raids WHERE id = :id"),
-            {"id": raid_id},
-        )
-        row = r.mappings().first()
-        if row:
-            spent = int(row["search_minutes_spent"] or 0)
-            limit = int(row["search_limit_minutes"] or 0)
-            spent_new = min(limit, spent + minutes_here)
-            await self.db.execute(
-                text("UPDATE raids SET search_minutes_spent = :s WHERE id = :id"),
-                {"id": raid_id, "s": spent_new},
-            )
-
-            await self._ensure_point_loot(point_id)
-            looted = await self._award_loot_from_point(raid_id, character_id, point_id, minutes_here)
-            await self._log(raid_id, character_id, point_id, presence_id, None, "search_finished", {"minutes_here": minutes_here, "looted": looted})
-
-        await self.db.execute(
-            text("UPDATE raid_point_presence SET state = 'left', left_at = :now WHERE id = :id"),
-            {"id": presence_id, "now": now},
-        )
-
-    async def _continue_raid_after_fight(self, raid_id: int, character_id: int, now: datetime) -> None:
-        r = await self.db.execute(
-            text(
-                "SELECT search_minutes_spent, search_limit_minutes, location_id, search_goal FROM raids WHERE id = :id AND status = 'active'"
-            ),
-            {"id": raid_id},
-        )
-        row = r.mappings().first()
-        if not row:
-            return
-
-        spent = int(row["search_minutes_spent"] or 0)
-        limit = int(row["search_limit_minutes"] or 0)
-        location_id = int(row["location_id"])
-        goal = str(row["search_goal"] or "any")
-
-        if spent >= limit:
-            await self._start_exit(raid_id, character_id, now)
-            return
-
-        next_point = await self._pick_next_point(raid_id, location_id, goal)
-        if next_point is None:
-            await self._start_exit(raid_id, character_id, now)
-            return
-
-        await self._start_travel_to_point(raid_id, character_id, next_point, now)
 
     async def _finish_searches(self, now: datetime) -> None:
         rows = await self.db.execute(
@@ -674,7 +748,15 @@ class RaidsEngine:
                 text("UPDATE raid_point_presence SET state = 'left', left_at = :now WHERE id = :id"),
                 {"id": presence_id, "now": now},
             )
-            await self._log(raid_id, character_id, point_id, presence_id, None, "search_finished", {"minutes_here": minutes_here, "looted": looted})
+            await self._log(
+                raid_id,
+                character_id,
+                point_id,
+                presence_id,
+                None,
+                "search_finished",
+                {"minutes_here": minutes_here, "looted": looted},
+            )
 
             if spent_new >= limit:
                 await self._start_exit(raid_id, character_id, now)
@@ -724,10 +806,7 @@ class RaidsEngine:
             await self._finalize_raid(int(r["id"]), int(r["character_id"]), now)
 
     async def _finalize_raid(self, raid_id: int, character_id: int, now: datetime) -> None:
-        started = await self.db.execute(
-            text("SELECT started_at FROM raids WHERE id = :id"),
-            {"id": raid_id},
-        )
+        started = await self.db.execute(text("SELECT started_at FROM raids WHERE id = :id"), {"id": raid_id})
         started_at = started.scalar()
         duration_seconds = 0
         if isinstance(started_at, datetime):
@@ -760,12 +839,7 @@ class RaidsEngine:
 
         await self.db.execute(text("DELETE FROM raid_inventory WHERE raid_id = :r"), {"r": raid_id})
 
-        result = {
-            "outcome": "finished",
-            "ended_at": now.isoformat(),
-            "duration_seconds": int(duration_seconds),
-            "loot": loot,
-        }
+        result = {"outcome": "finished", "ended_at": now.isoformat(), "duration_seconds": int(duration_seconds), "loot": loot}
 
         await self.db.execute(
             text(
@@ -786,10 +860,7 @@ class RaidsEngine:
         await self._log(raid_id, character_id, None, None, None, "raid_finished", {})
 
     async def _mark_raid_dead(self, raid_id: int, character_id: int, now: datetime) -> None:
-        started = await self.db.execute(
-            text("SELECT started_at FROM raids WHERE id = :id"),
-            {"id": raid_id},
-        )
+        started = await self.db.execute(text("SELECT started_at FROM raids WHERE id = :id"), {"id": raid_id})
         started_at = started.scalar()
         duration_seconds = 0
         if isinstance(started_at, datetime):
@@ -810,12 +881,7 @@ class RaidsEngine:
 
         await self.db.execute(text("DELETE FROM raid_inventory WHERE raid_id = :r"), {"r": raid_id})
 
-        result = {
-            "outcome": "dead",
-            "ended_at": now.isoformat(),
-            "duration_seconds": int(duration_seconds),
-            "loot_lost": loot_lost,
-        }
+        result = {"outcome": "dead", "ended_at": now.isoformat(), "duration_seconds": int(duration_seconds), "loot_lost": loot_lost}
 
         await self.db.execute(
             text(
@@ -890,6 +956,9 @@ class RaidsEngine:
             {"rid": raid_id, "pid": point_id, "seq": seq, "now": now},
         )
 
+        ptn = await self.db.execute(text("SELECT name FROM raid_points WHERE id = :pid"), {"pid": point_id})
+        point_name = str(ptn.scalar() or f"Точка {int(point_id)}")
+
         eta = _travel_eta(now)
         await self.db.execute(
             text(
@@ -906,7 +975,16 @@ class RaidsEngine:
             text("UPDATE raids SET phase = 'traveling', current_point_id = :p WHERE id = :r"),
             {"r": raid_id, "p": point_id},
         )
-        await self._log(raid_id, character_id, point_id, None, None, "travel_started", {"travel_eta_at": eta.isoformat()})
+
+        await self._log(
+            raid_id,
+            character_id,
+            point_id,
+            None,
+            None,
+            "travel_started",
+            {"travel_eta_at": eta.isoformat(), "point_name": point_name, "notify": False},
+        )
 
     async def _ensure_point_loot(self, point_id: int) -> None:
         c = await self.db.execute(text("SELECT COUNT(*) FROM raid_point_loot WHERE point_id = :p"), {"p": point_id})
@@ -946,7 +1024,7 @@ class RaidsEngine:
 
         for r in rows:
             item_id = int(r["id"])
-            now = _utcnow()
+            now2 = _utcnow()
             await self.db.execute(
                 text(
                     """
@@ -956,13 +1034,16 @@ class RaidsEngine:
                     DO UPDATE SET qty = raid_point_loot.qty + 1, updated_at = EXCLUDED.updated_at
                     """
                 ),
-                {"p": point_id, "i": item_id, "now": now},
+                {"p": point_id, "i": item_id, "now": now2},
             )
 
     async def _award_loot_from_point(self, raid_id: int, character_id: int, point_id: int, minutes_here: int) -> list[dict]:
         force = _env_int("RAID_TEST_LOOT_ALWAYS", 0) == 1
         attempts = 3 if force else _RNG.randint(1, 3)
         base_p = 1.0 if force else min(0.05 + 0.04 * max(0, minutes_here), 0.9)
+
+        ptn = await self.db.execute(text("SELECT name FROM raid_points WHERE id = :pid"), {"pid": point_id})
+        point_name = str(ptn.scalar() or f"Точка {int(point_id)}")
 
         out: list[dict] = []
 
@@ -973,7 +1054,7 @@ class RaidsEngine:
             q = await self.db.execute(
                 text(
                     """
-                    SELECT l.item_id, l.qty, i.weight
+                    SELECT l.item_id, l.qty, i.weight, i.name AS item_name
                     FROM raid_point_loot l
                     JOIN items i ON i.id = l.item_id
                     WHERE l.point_id = :p AND l.qty > 0
@@ -991,6 +1072,7 @@ class RaidsEngine:
             item_id = int(row["item_id"])
             qty_here = int(row.get("qty") or 0)
             item_weight = float(row.get("weight") or 0)
+            item_name = str(row.get("item_name") or f"item#{item_id}")
 
             if qty_here <= 0:
                 continue
@@ -998,7 +1080,7 @@ class RaidsEngine:
             if not await self._can_take_item(character_id, raid_id, item_weight):
                 continue
 
-            now = _utcnow()
+            now2 = _utcnow()
 
             if qty_here == 1:
                 dec = await self.db.execute(
@@ -1023,7 +1105,7 @@ class RaidsEngine:
                         RETURNING qty
                         """
                     ),
-                    {"p": point_id, "i": item_id, "now": now},
+                    {"p": point_id, "i": item_id, "now": now2},
                 )
                 if dec.scalar() is None:
                     continue
@@ -1037,18 +1119,25 @@ class RaidsEngine:
                     DO UPDATE SET qty = raid_inventory.qty + 1
                     """
                 ),
-                {"r": raid_id, "i": item_id, "p": point_id, "now": now},
+                {"r": raid_id, "i": item_id, "p": point_id, "now": now2},
             )
 
             out.append({"item_id": item_id, "qty": 1})
 
+            await self._log(
+                raid_id,
+                character_id,
+                point_id,
+                None,
+                None,
+                "item_found",
+                {"item_id": item_id, "item_name": item_name, "qty": 1, "point_name": point_name, "notify": True},
+            )
+
         return out
 
     async def _can_take_item(self, character_id: int, raid_id: int, add_weight: float) -> bool:
-        r = await self.db.execute(
-            text("SELECT carry_capacity, load FROM characters WHERE id = :cid"),
-            {"cid": character_id},
-        )
+        r = await self.db.execute(text("SELECT carry_capacity, load FROM characters WHERE id = :cid"), {"cid": character_id})
         ch = r.mappings().first()
         if not ch:
             return False
@@ -1071,7 +1160,14 @@ class RaidsEngine:
 
         return (base_load + raid_load + float(add_weight or 0)) <= cap
 
-    async def _consume_battle_ammo(self, character_id: int) -> bool:
+    async def _consume_battle_ammo(
+        self,
+        character_id: int,
+        raid_id: int | None = None,
+        point_id: int | None = None,
+        presence_id: int | None = None,
+        fight_id: int | None = None,
+    ) -> bool:
         eq = await self.db.execute(
             text(
                 """
@@ -1086,11 +1182,30 @@ class RaidsEngine:
         if not row:
             return True
 
+        weapon_ids: list[int] = []
+        for slot in (1, 2, 3):
+            wid = row.get(f"weapon_{slot}_id")
+            if wid is not None:
+                try:
+                    weapon_ids.append(int(wid))
+                except Exception:
+                    continue
+
+        weapon_names: dict[int, str] = {}
+        if weapon_ids:
+            wq = await self.db.execute(text("SELECT id, name FROM weapons WHERE id = ANY(:ids)"), {"ids": weapon_ids})
+            for w in wq.mappings().all():
+                try:
+                    weapon_names[int(w["id"])] = str(w.get("name") or f"weapon#{int(w['id'])}")
+                except Exception:
+                    continue
+
         missing = False
         for slot in (1, 2, 3):
             wid = row.get(f"weapon_{slot}_id")
             if wid is None:
                 continue
+            wid = int(wid)
 
             dec = await self.db.execute(
                 text(
@@ -1106,8 +1221,34 @@ class RaidsEngine:
                 ),
                 {"cid": character_id, "slot": slot},
             )
-            if dec.scalar() is None:
+            new_qty = dec.scalar()
+            if new_qty is None:
                 missing = True
+                if raid_id is not None and point_id is not None:
+                    await self._log(
+                        int(raid_id),
+                        int(character_id),
+                        int(point_id),
+                        int(presence_id) if presence_id is not None else None,
+                        int(fight_id) if fight_id is not None else None,
+                        "ammo_empty",
+                        {"weapon_slot": int(slot), "weapon_name": weapon_names.get(wid), "notify": True},
+                    )
+                continue
+
+            try:
+                if int(new_qty) <= 0 and raid_id is not None and point_id is not None:
+                    await self._log(
+                        int(raid_id),
+                        int(character_id),
+                        int(point_id),
+                        int(presence_id) if presence_id is not None else None,
+                        int(fight_id) if fight_id is not None else None,
+                        "ammo_empty",
+                        {"weapon_slot": int(slot), "weapon_name": weapon_names.get(wid), "notify": True},
+                    )
+            except Exception:
+                pass
 
         return missing
 
@@ -1275,10 +1416,13 @@ class RaidsEngine:
             injuries=injuries,
         )
 
-
     async def _upsert_character_health(self, character_id: int, state: CombatantState) -> None:
         rem = max(0, int(state.hp_max) - int(state.hp_current))
         now = _utcnow()
+
+        recovery_until: datetime | None = None
+        if rem > 0:
+            recovery_until = now + timedelta(seconds=int(rem) * 600)
 
         await self.db.execute(
             text(
@@ -1296,10 +1440,7 @@ class RaidsEngine:
                 VALUES (
                     :cid,
                     :hp,
-                    CASE
-                        WHEN :rem > 0 THEN :now + (:rem * interval '600 seconds')
-                        ELSE NULL
-                    END,
+                    :recovery_until,
                     :h, :t, :a, :l,
                     :now
                 )
@@ -1317,7 +1458,7 @@ class RaidsEngine:
             {
                 "cid": int(character_id),
                 "hp": int(state.hp_current),
-                "rem": int(rem),
+                "recovery_until": recovery_until,
                 "h": int(state.injuries.head),
                 "t": int(state.injuries.torso),
                 "a": int(state.injuries.arm),
@@ -1327,6 +1468,8 @@ class RaidsEngine:
         )
 
     async def _corpse_loot(self, winner_raid_id: int, winner_char_id: int, loser_raid_id: int, loser_char_id: int) -> None:
+        found_parts: list[str] = []
+
         victim_items = await self.db.execute(
             text("SELECT item_id, qty FROM raid_inventory WHERE raid_id = :r AND qty > 0 ORDER BY random() LIMIT 1"),
             {"r": loser_raid_id},
@@ -1337,15 +1480,13 @@ class RaidsEngine:
             qty = int(vi["qty"])
 
             if qty <= 1:
-                await self.db.execute(
-                    text("DELETE FROM raid_inventory WHERE raid_id = :r AND item_id = :i"),
-                    {"r": loser_raid_id, "i": item_id},
-                )
+                await self.db.execute(text("DELETE FROM raid_inventory WHERE raid_id = :r AND item_id = :i"), {"r": loser_raid_id, "i": item_id})
             else:
                 await self.db.execute(
                     text("UPDATE raid_inventory SET qty = qty - 1 WHERE raid_id = :r AND item_id = :i AND qty >= 2"),
                     {"r": loser_raid_id, "i": item_id},
                 )
+
             await self.db.execute(
                 text(
                     """
@@ -1358,37 +1499,56 @@ class RaidsEngine:
                 {"r": winner_raid_id, "i": item_id, "now": _utcnow()},
             )
 
+            nm = await self.db.execute(text("SELECT name FROM items WHERE id = :id"), {"id": item_id})
+            item_name = str(nm.scalar() or f"item#{item_id}")
+            found_parts.append(f"{item_name} x1")
+
         eq = await self.db.execute(
             text("SELECT weapon_1_id, weapon_2_id, weapon_3_id FROM equipment WHERE character_id = :cid"),
             {"cid": loser_char_id},
         )
         e = eq.mappings().first()
-        if not e:
-            return
+        if e:
+            slots: list[tuple[int, int]] = []
+            for s in (1, 2, 3):
+                wid = e.get(f"weapon_{s}_id")
+                if wid is not None:
+                    slots.append((s, int(wid)))
 
-        slots: list[tuple[int, int]] = []
-        for s in (1, 2, 3):
-            wid = e.get(f"weapon_{s}_id")
-            if wid is not None:
-                slots.append((s, int(wid)))
-        if not slots:
-            return
+            if slots:
+                slot, weapon_id = _RNG.choice(slots)
+                await self.db.execute(text(f"UPDATE equipment SET weapon_{slot}_id = NULL WHERE character_id = :cid"), {"cid": loser_char_id})
+                await self.db.execute(
+                    text(
+                        """
+                        INSERT INTO raid_inventory(raid_id, item_id, qty, obtained_at, meta_json)
+                        VALUES (:r, :i, 1, :now, '{}'::jsonb)
+                        ON CONFLICT (raid_id, item_id)
+                        DO UPDATE SET qty = raid_inventory.qty + 1
+                        """
+                    ),
+                    {"r": winner_raid_id, "i": weapon_id, "now": _utcnow()},
+                )
 
-        slot, weapon_id = _RNG.choice(slots)
-        await self.db.execute(
-            text(f"UPDATE equipment SET weapon_{slot}_id = NULL WHERE character_id = :cid"),
-            {"cid": loser_char_id},
-        )
-        await self.db.execute(
-            text(
-                """
-                INSERT INTO raid_inventory(raid_id, item_id, qty, obtained_at, meta_json)
-                VALUES (:r, :i, 1, :now, '{}'::jsonb)
-                ON CONFLICT (raid_id, item_id)
-                DO UPDATE SET qty = raid_inventory.qty + 1
-                """
-            ),
-            {"r": winner_raid_id, "i": weapon_id, "now": _utcnow()},
+                wn = await self.db.execute(text("SELECT name FROM weapons WHERE id = :id"), {"id": weapon_id})
+                weapon_name = wn.scalar()
+                if weapon_name is None:
+                    wn2 = await self.db.execute(text("SELECT name FROM items WHERE id = :id"), {"id": weapon_id})
+                    weapon_name = wn2.scalar()
+                found_parts.append(str(weapon_name or f"weapon#{weapon_id}"))
+
+        losern = await self.db.execute(text("SELECT name FROM characters WHERE id = :id"), {"id": loser_char_id})
+        loser_name = str(losern.scalar() or f"#{loser_char_id}")
+
+        found_line = ", ".join(found_parts) if found_parts else ""
+        await self._log(
+            winner_raid_id,
+            winner_char_id,
+            None,
+            None,
+            None,
+            "corpse_search",
+            {"victim_id": loser_char_id, "victim_name": loser_name, "found_line": found_line, "notify": True},
         )
 
     async def _log(
@@ -1401,6 +1561,17 @@ class RaidsEngine:
         kind: str,
         payload: dict,
     ) -> None:
+        if raid_id is None or character_id is None:
+            return
+
+        p: dict = dict(payload or {})
+        if "text" not in p:
+            txt = _event_text(kind, p)
+            if txt:
+                p["text"] = txt
+        if "notify" not in p:
+            p["notify"] = kind in _NOTIFY_DEFAULT_KINDS
+
         await self.db.execute(
             text(
                 """
@@ -1415,13 +1586,111 @@ class RaidsEngine:
                 "presence_id": presence_id,
                 "fight_id": fight_id,
                 "kind": kind,
-                "payload": _json(payload),
+                "payload": _json(p),
                 "now": _utcnow(),
             },
         )
 
 
-async def raids_ticker(sessionmaker: async_sessionmaker[AsyncSession], tick_seconds: int = 60) -> None:
+async def _notify_raids(session: AsyncSession, bot: Bot) -> None:
+    q = await session.execute(
+        text(
+            """
+            SELECT
+                r.id AS raid_id,
+                r.character_id AS character_id,
+                u.tg_id AS tg_id,
+                COALESCE((r.meta_json->>'notify_last_log_id')::bigint, 0) AS last_log_id
+            FROM raids r
+            JOIN characters c ON c.id = r.character_id
+            JOIN users u ON u.id = c.user_id
+            WHERE r.status = 'active'
+              AND COALESCE((r.meta_json->>'notify_enabled')::boolean, false) = true
+              AND u.tg_id IS NOT NULL
+            """
+        )
+    )
+    raids = q.mappings().all()
+
+    for r in raids:
+        raid_id = int(r["raid_id"])
+        character_id = int(r["character_id"])
+        tg_id = int(r["tg_id"])
+        last_id = int(r.get("last_log_id") or 0)
+
+        logs_q = await session.execute(
+            text(
+                """
+                SELECT id, kind, payload, created_at
+                FROM raid_logs
+                WHERE raid_id = :raid_id
+                  AND character_id = :character_id
+                  AND id > :last_id
+                  AND COALESCE((payload->>'notify')::boolean, false) = true
+                ORDER BY id ASC
+                LIMIT 10
+                """
+            ),
+            {"raid_id": raid_id, "character_id": character_id, "last_id": last_id},
+        )
+        rows = logs_q.mappings().all()
+        if not rows:
+            continue
+
+        new_last_id = last_id
+        sent = 0
+
+        for row in rows:
+            try:
+                new_last_id = max(new_last_id, int(row["id"]))
+            except Exception:
+                continue
+
+            kind = str(row.get("kind") or "")
+            payload = row.get("payload") or {}
+
+            text_msg = ""
+            try:
+                if isinstance(payload, dict):
+                    text_msg = str(payload.get("text") or "")
+                if not text_msg:
+                    text_msg = _event_text(kind, payload if isinstance(payload, dict) else {})
+            except Exception:
+                text_msg = ""
+
+            if not text_msg:
+                continue
+
+            try:
+                msg = await bot.send_message(chat_id=tg_id, text=text_msg)
+                asyncio.create_task(_delete_message_later(bot, tg_id, int(msg.message_id), 60))
+                sent += 1
+                if sent >= 5:
+                    break
+            except Exception:
+                break
+
+        try:
+            await session.execute(
+                text(
+                    """
+                    UPDATE raids
+                    SET meta_json = COALESCE(meta_json, '{}'::jsonb)
+                                   || jsonb_build_object('notify_last_log_id', CAST(:last_id AS bigint))
+                    WHERE id = :rid
+                    """
+                ),
+                {"rid": raid_id, "last_id": new_last_id},
+            )
+        except Exception:
+            continue
+
+
+async def raids_ticker(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    tick_seconds: int = 60,
+    bot: Bot | None = None,
+) -> None:
     while True:
         try:
             async with sessionmaker() as session:
@@ -1429,4 +1698,13 @@ async def raids_ticker(sessionmaker: async_sessionmaker[AsyncSession], tick_seco
                     await RaidsEngine(session).tick()
         except Exception:
             LOG.exception("raids_ticker crashed")
+
+        if bot is not None:
+            try:
+                async with sessionmaker() as session2:
+                    async with session2.begin():
+                        await _notify_raids(session2, bot)
+            except Exception:
+                LOG.exception("raids_notifier crashed")
+
         await asyncio.sleep(tick_seconds)

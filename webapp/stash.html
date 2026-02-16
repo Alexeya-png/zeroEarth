@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Склад</title>
   <style>
@@ -750,6 +751,7 @@
       <span>Рынок</span>
     </a>
   </nav>
+
   <div class="modalBg" id="modalBg">
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modalTop">
@@ -759,5 +761,763 @@
       <div class="rows" id="modalRows"></div>
     </div>
   </div>
+
+  <script>
+
+    /* ═══════════════════════════════════════════
+       HELPERS
+       ═══════════════════════════════════════════ */
+    function esc(s){
+      return String(s ?? "")
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#39;");
+    }
+
+    function num(v){
+      if (v == null) return "\u2013";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "\u2013";
+      return String(n);
+    }
+
+    function numSigned(v){
+      if (v == null) return "\u2013";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "\u2013";
+      if (n > 0) return "+" + n;
+      return String(n);
+    }
+
+    function kg(v){
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "\u2013";
+      return (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, "") + " кг";
+    }
+
+    function money(v){
+      if (v == null) return "\u2013";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "\u2013";
+      return n.toLocaleString("ru-RU") + " \u27E1";
+    }
+
+    function stars(v){
+      if (v == null) return "\u2013";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "\u2013";
+      return n.toLocaleString("ru-RU") + " \u2B50";
+    }
+
+    function tierFrom(item){
+      return item?.equipment_stats?.tier || item?.weapon_mod?.tier || item?.quality_tier || "\u2013";
+    }
+
+    function tagType(item){
+      const t = String(item?.item_type || "\u2013").toLowerCase();
+      if (t === "weapon") return "weapon";
+      if (t === "ammo") return "ammo";
+      if (t === "head") return "head";
+      if (t === "body") return "body";
+      if (t === "gloves") return "gloves";
+      if (t === "boots") return "boots";
+      return t || "misc";
+    }
+
+    function tierClass(t){
+      if (!t) return "";
+      return "tier-" + String(t).toLowerCase();
+    }
+
+    function rarityClass(r){
+      if (!r) return "";
+      return "rarity-" + String(r).toLowerCase();
+    }
+
+    /* SVG icons */
+    const ICONS = {
+      head: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 0-7 7v1.5a2 2 0 0 0 1 1.73V15a6 6 0 0 0 12 0v-2.77a2 2 0 0 0 1-1.73V9a7 7 0 0 0-7-7z"/><path d="M9 22h6"/></svg>',
+      body: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2 12 5 8 2 3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>',
+      gloves: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12v7a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-7"/><path d="M6 12l2-7a2 2 0 0 1 2-1h0a2 2 0 0 1 2 2v4"/><path d="M18 12l-2-7a2 2 0 0 0-2-1h0a2 2 0 0 0-2 2v4"/></svg>',
+      boots: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v10a4 4 0 0 0 4 4h6v4H7a4 4 0 0 1-4-4v-1h4v-2H3V3h4z"/></svg>',
+      weapon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>',
+      shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+      back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+      box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>',
+      weight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>'
+    };
+
+    function slotIcon(slot){
+      if (slot === "head") return ICONS.head;
+      if (slot === "body") return ICONS.body;
+      if (slot === "gloves") return ICONS.gloves;
+      if (slot === "boots") return ICONS.boots;
+      if (slot === "weapon") return ICONS.weapon;
+      return ICONS.shield;
+    }
+
+    /* ═══════════════════════════════════════════
+       ROW / SECTION helpers (for item detail)
+       ═══════════════════════════════════════════ */
+    function row(k, v, cls=""){
+      return `<div class="row ${cls}"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
+    }
+
+    function rowHtml(k, vHtml, cls=""){
+      return `<div class="row ${cls}"><div class="k">${esc(k)}</div><div class="v">${vHtml}</div></div>`;
+    }
+
+    function section(title, rowsHtml){
+      if (!rowsHtml) return "";
+      return `<div class="section"><h2>${esc(title)}</h2><div class="rows">${rowsHtml}</div></div>`;
+    }
+
+    function bonusKeyRu(k){
+      const m = {
+        accuracy_bonus: "Точность",
+        reliability_bonus: "Надежность",
+        damage_bonus: "Урон",
+        armor_pen_bonus: "Пробитие",
+        stealth_bonus: "Скрытность",
+        carry_capacity_bonus: "Переноска",
+        loot_analysis_bonus: "Распознавание предметов",
+        armor: "Броня"
+      };
+      return m[k] || k;
+    }
+
+    /* ═══════════════════════════════════════════
+       STATE
+       ═══════════════════════════════════════════ */
+    let currentView = "stash"; // "stash" | "item"
+    let stashData = null;
+    let currentPage = 0;
+
+    /* ═══════════════════════════════════════════
+       RENDER: STASH INVENTORY VIEW
+       ═══════════════════════════════════════════ */
+    function renderStash(data){
+      stashData = data;
+      const root = document.getElementById("root");
+
+      const ch = data.character;
+      const eq = data.equipment;
+      const inv = data.inventory;
+
+      let html = "";
+
+      /* Header card */
+      html += `<div class="card">
+        <div class="stashHeader">
+          <div class="stashAvatar">${ICONS.box}</div>
+          <div class="stashInfo">
+            <h1>Склад #${esc(ch.id)} &mdash; ${esc(ch.name)}</h1>
+            <div class="stashWeight">
+              ${ICONS.weight}
+              <span>${kg(data.total_weight)}</span>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">
+              <button class="btn" id="pickChar">Сменить персонажа</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+      /* Equipment - armor */
+      html += `<div class="card">
+        <div class="equipTitle">
+          ${ICONS.shield}
+          <span>Надето &mdash; броня</span>
+        </div>`;
+
+      if (eq.armor && eq.armor.length > 0){
+        eq.armor.forEach(item => {
+          html += `<div class="equipItem" data-item-id="${esc(item.item_id)}">
+            <div class="equipSlotIcon">${slotIcon(item.slot)}</div>
+            <div class="equipMeta">
+              <div class="equipName">${esc(item.name)}</div>
+              <div class="equipDetails">
+                <span>${kg(item.weight)}</span>
+                <span class="dot"></span>
+                ${item.tier ? `<span class="${tierClass(item.tier)}">Tier ${esc(item.tier)}</span><span class="dot"></span>` : ""}
+                <span class="${rarityClass(item.rarity)}">${esc(item.rarity)}</span>
+              </div>
+            </div>
+          </div>`;
+        });
+      } else {
+        html += `<div class="emptySlot">Пусто</div>`;
+      }
+
+      html += `</div>`;
+
+      /* Equipment - weapons */
+      html += `<div class="card">
+        <div class="equipTitle">
+          ${ICONS.weapon}
+          <span>Надето &mdash; оружие</span>
+        </div>`;
+
+      if (eq.weapons && eq.weapons.length > 0){
+        eq.weapons.forEach(item => {
+          html += `<div class="equipItem" data-item-id="${esc(item.item_id)}">
+            <div class="equipSlotIcon">${ICONS.weapon}</div>
+            <div class="equipMeta">
+              <div class="equipName">${esc(item.name)}</div>
+              <div class="equipDetails">
+                <span>${kg(item.weight)}</span>
+                <span class="dot"></span>
+                ${item.tier ? `<span class="${tierClass(item.tier)}">Tier ${esc(item.tier)}</span><span class="dot"></span>` : ""}
+                <span class="${rarityClass(item.rarity)}">${esc(item.rarity)}</span>
+              </div>
+            </div>
+          </div>`;
+        });
+      } else {
+        html += `<div class="emptySlot">Пусто</div>`;
+      }
+
+      html += `</div>`;
+
+      /* Inventory */
+      html += `<div class="card">
+        <div class="equipTitle">
+          ${ICONS.box}
+          <span>Инвентарь</span>
+        </div>`;
+
+      if (inv.items && inv.items.length > 0){
+        const startIdx = inv.page * inv.page_size + 1;
+        inv.items.forEach((item, i) => {
+          html += `<div class="invItem" data-item-id="${esc(item.item_id)}">
+            <div class="invNum">${startIdx + i}</div>
+            <div class="invMeta">
+              <div class="invName">${esc(item.name)}</div>
+              <div class="invDetails">
+                <span>${kg(item.weight)}</span>
+                <span class="dot"></span>
+                ${item.tier ? `<span class="${tierClass(item.tier)}">Tier ${esc(item.tier)}</span><span class="dot"></span>` : ""}
+                <span class="${rarityClass(item.rarity)}">${esc(item.rarity)}</span>
+              </div>
+            </div>
+            ${item.qty > 1 ? `<div class="invQty">x${item.qty}</div>` : ""}
+          </div>`;
+        });
+
+        /* Pagination */
+        if (inv.total_pages > 1){
+          html += `<div class="pagination">
+            <button class="pgBtn" id="pgPrev" ${inv.page <= 0 ? "disabled" : ""}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <div class="pgInfo">${inv.page + 1} / ${inv.total_pages}</div>
+            <button class="pgBtn" id="pgNext" ${inv.page >= inv.total_pages - 1 ? "disabled" : ""}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>`;
+        }
+      } else {
+        html += `<div class="emptySlot">Пусто</div>`;
+      }
+
+      html += `</div>`;
+
+      root.innerHTML = html;
+      currentView = "stash";
+
+      /* Bind click events */
+      root.querySelectorAll("[data-item-id]").forEach(el => {
+        el.addEventListener("click", () => {
+          const id = el.getAttribute("data-item-id");
+          if (id) openItem(id);
+        });
+      });
+
+      const pc = document.getElementById("pickChar");
+      if (pc){
+        pc.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          pickCharacter();
+        });
+      }
+
+      /* Bind pagination */
+      const pgPrev = document.getElementById("pgPrev");
+      const pgNext = document.getElementById("pgNext");
+      if (pgPrev){
+        pgPrev.addEventListener("click", () => {
+          if (currentPage > 0){
+            currentPage--;
+            loadStashPage(currentPage);
+          }
+        });
+      }
+      if (pgNext){
+        pgNext.addEventListener("click", () => {
+          if (currentPage < inv.total_pages - 1){
+            currentPage++;
+            loadStashPage(currentPage);
+          }
+        });
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       RENDER: ITEM DETAIL VIEW
+       ═══════════════════════════════════════════ */
+    function renderItem(item){
+      const root = document.getElementById("root");
+
+      const type = tagType(item);
+      const tier = tierFrom(item);
+
+      const badges = [
+        `<span class="badge">${esc(type)}</span>`,
+        `<span class="badge tier">Tier ${esc(tier)}</span>`
+      ];
+
+      const market = item.market || {};
+      const avg = market.avg_price != null ? money(market.avg_price) : "\u2013";
+      const starsAvg = market.stars_avg_price != null ? stars(market.stars_avg_price) : null;
+
+      let html = `<button class="backBtn" id="goBack">${ICONS.back} Назад к складу</button>`;
+
+      html += `<div class="card">`;
+
+      html += `<div class="title"><div>
+        <h1>${esc(item.name || "Предмет")}</h1>
+        <div class="sub">ID \u2013 ${esc(item.id)}</div>
+        <div class="badges">${badges.join("")}</div>
+      </div></div>`;
+
+      html += section("Рынок",
+        row("Средняя цена на рынке", avg) +
+        (starsAvg ? row("Средняя цена на рынке Звезды", starsAvg, "stars") : "")
+      );
+
+      const eq = item.equipment_stats;
+      const w = item.weight_kg;
+
+      if (type === "head" && eq){
+        html += section("Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к распознаванию предметов", numSigned(eq.loot_analysis_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "body" && eq){
+        const stealth = Number(eq.stealth_bonus ?? 0);
+        const stealthLabel = stealth < 0 ? "Штраф к скрытности" : "Бонус к скрытности";
+        html += section("Характеристики экипировки",
+          row("Броня", num(eq.armor)) +
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к переноске", numSigned(eq.carry_capacity_bonus)) +
+          row(stealthLabel, numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "gloves" && eq){
+        html += section("Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к точности", numSigned(eq.accuracy_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "boots" && eq){
+        html += section("Характеристики экипировки",
+          row("Надежность", num(eq.reliability) + "%") +
+          row("Бонус к скрытности", numSigned(eq.stealth_bonus)) +
+          row("Вес", kg(w))
+        );
+      } else if (type === "ammo"){
+        const a = item.ammo_stats || {};
+        html += section("Характеристики патронов",
+          row("Урон", a.damage != null ? String(a.damage) : "\u2013") +
+          row("Пробитие", a.armor_penetration != null ? String(a.armor_penetration) : "\u2013") +
+          row("Вес", kg(w))
+        );
+      } else if (type === "weapon"){
+        const caliber = item.caliber?.code || item.caliber?.name;
+        const caliberHtml = caliber
+          ? `<a class="link" data-caliber="${esc(caliber)}">${esc(caliber)}</a>`
+          : "\u2013";
+
+        html += section("Характеристики оружия",
+          row("Точность", item.accuracy != null ? String(item.accuracy) : "\u2013") +
+          row("Надежность", item.reliability != null ? String(item.reliability) + "%" : "\u2013") +
+          rowHtml("Калибр", caliberHtml) +
+          row("Вес", kg(w))
+        );
+
+        const u = item.weapon_unique;
+        const bonus = u?.total_bonus || {};
+        const bonusKeys = Object.keys(bonus || {}).filter(k => {
+          const v = bonus[k];
+          if (v == null) return false;
+          const n = Number(v);
+          return Number.isFinite(n) && n !== 0;
+        });
+
+        if (bonusKeys.length){
+          const rows = bonusKeys.map(k => row(bonusKeyRu(k), numSigned(bonus[k]))).join("");
+          html += section("Дополнительные бонусы от модулей", rows);
+        }
+
+        const mods = u?.mods || [];
+        if (mods.length){
+          const modsHtml = mods.map(m => {
+            const parts = [];
+            if (Number(m.accuracy_bonus || 0) !== 0) parts.push("точность " + numSigned(m.accuracy_bonus));
+            if (Number(m.reliability_bonus || 0) !== 0) parts.push("надежность " + numSigned(m.reliability_bonus));
+            if (Number(m.damage_bonus || 0) !== 0) parts.push("урон " + numSigned(m.damage_bonus));
+            if (Number(m.armor_pen_bonus || 0) !== 0) parts.push("пробитие " + numSigned(m.armor_pen_bonus));
+            const tail = parts.length ? " \u2013 " + parts.join(", ") : "";
+            const name = esc(m.name || ("Мод " + m.id)) + tail;
+            return rowHtml("Модуль", `<a class="link" data-item="${esc(m.id)}">${name}</a>`);
+          }).join("");
+          html += section("Список модулей", modsHtml);
+        }
+      }
+
+      const mod = item.weapon_mod;
+      if (mod){
+        html += section("Характеристики модуля",
+          row("Тип", mod.mod_type || "\u2013") +
+          row("Tier", mod.tier || "\u2013") +
+          row("Бонус к точности", numSigned(mod.accuracy_bonus)) +
+          row("Бонус к надежности", numSigned(mod.reliability_bonus)) +
+          row("Бонус к урону", numSigned(mod.damage_bonus)) +
+          row("Бонус к пробитию", numSigned(mod.armor_pen_bonus)) +
+          row("Вес", kg(w))
+        );
+      }
+
+      if (!eq && type !== "weapon" && type !== "ammo" && !mod){
+        html += section("Характеристики", row("Вес", kg(w)) + row("Цена", money(item.price)));
+      }
+
+      html += `</div>`;
+      root.innerHTML = html;
+      currentView = "item";
+
+      /* Back button */
+      document.getElementById("goBack").addEventListener("click", () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("id");
+        url.searchParams.delete("startapp");
+        url.searchParams.delete("tgWebAppStartParam");
+        history.pushState({}, "", url.toString());
+        if (stashData) renderStash(stashData);
+        else loadStashPage(currentPage || 0);
+      });
+
+      /* Item links */
+      root.querySelectorAll("[data-item]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-item");
+          if (id) openItem(id);
+        });
+      });
+
+      /* Caliber links */
+      root.querySelectorAll("[data-caliber]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const code = el.getAttribute("data-caliber");
+          if (code) showModal("Калибр", [row("Код", code)]);
+        });
+      });
+    }
+
+    /* ═══════════════════════════════════════════
+       MODAL
+       ═══════════════════════════════════════════ */
+    function showModal(title, rowsHtmlArr){
+      const bg = document.getElementById("modalBg");
+      const t = document.getElementById("modalTitle");
+      const rows = document.getElementById("modalRows");
+      t.textContent = title;
+      rows.innerHTML = rowsHtmlArr.join("");
+      bg.style.display = "flex";
+    }
+
+    function hideModal(){
+      document.getElementById("modalBg").style.display = "none";
+    }
+
+    document.getElementById("modalClose").addEventListener("click", hideModal);
+    document.getElementById("modalBg").addEventListener("click", (e) => {
+      if (e.target.id === "modalBg") hideModal();
+    });
+
+
+
+    const TG = (window.Telegram && Telegram.WebApp) ? Telegram.WebApp : null;
+
+    function _safeDecodeURIComponent(v){
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      if (!s) return "";
+      try { return decodeURIComponent(s); } catch(_e) { return s; }
+    }
+
+    function _getInitDataFromUrl(){
+      try {
+        const u = new URL(window.location.href);
+
+        let v = u.searchParams.get("initData") || u.searchParams.get("init_data") || u.searchParams.get("tgWebAppData") || "";
+        if (v) return _safeDecodeURIComponent(v);
+
+        const h = (u.hash || "").replace(/^#/, "");
+        if (!h) return "";
+        const hp = new URLSearchParams(h);
+        v = hp.get("tgWebAppData") || hp.get("initData") || hp.get("init_data") || "";
+        if (v) return _safeDecodeURIComponent(v);
+      } catch(_e) {}
+      return "";
+    }
+
+    function getInitData(){
+      try {
+        const v = (TG && TG.initData) ? String(TG.initData || "").trim() : "";
+        if (v) return v;
+      } catch(_e) {}
+
+      const u = _getInitDataFromUrl();
+      if (u) return u;
+
+      return "";
+    }
+
+    const TG_INIT_DATA = getInitData();
+
+    async function fetchJson(url, opts){
+      try{
+        const o = opts || {};
+        const headers = Object.assign({}, o.headers || {});
+
+        if (o.auth && TG_INIT_DATA){
+          headers["X-Tg-InitData"] = TG_INIT_DATA;
+        }
+
+        const init = {
+          method: o.method || "GET",
+          cache: "no-store",
+          headers
+        };
+
+        if (o.json != null){
+          init.method = o.method || "POST";
+          headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(o.json);
+        }
+
+        const r = await fetch(url, init);
+        const j = await r.json();
+        return j;
+      }catch(e){
+        return null;
+      }
+    }
+
+    const CHAR_STORE_KEY = "ze.market.character_id";
+
+    function loadSavedCharacterId(){
+      try{
+        const v = localStorage.getItem(CHAR_STORE_KEY) || "";
+        if (/^\d+$/.test(v)) return Number(v);
+      }catch(e){}
+      return null;
+    }
+
+    function saveCharacterId(cid){
+      try{ localStorage.setItem(CHAR_STORE_KEY, String(cid)); }catch(e){}
+    }
+
+    async function apiMeStash(page, pageSize, characterId){
+      const qs = new URLSearchParams();
+      if (page != null) qs.set("page", String(page));
+      if (pageSize != null) qs.set("page_size", String(pageSize));
+      if (characterId != null) qs.set("character_id", String(characterId));
+
+      const url = "/api/me/stash" + (qs.toString() ? ("?" + qs.toString()) : "");
+      const j = await fetchJson(url, {auth:true});
+      if (!j || !j.ok || !j.stash) return {ok:false, error: j?.error || "Ошибка запроса"};
+      return {ok:true, stash: j.stash};
+    }
+
+    async function apiMeCharacters(){
+      const j = await fetchJson("/api/me/characters", {auth:true});
+      if (!j || !j.ok || !Array.isArray(j.characters)) return {ok:false, characters:[], error: j?.error || "unauthorized"};
+      return {ok:true, characters: j.characters};
+    }
+
+    async function pickCharacter(){
+      const res = await apiMeCharacters();
+      if (!res.ok){
+        showModal("Персонажи", [row("–", res.error || "Ошибка")]);
+        return;
+      }
+
+      const rows = (res.characters || [])
+        .filter(c => Number(c?.id || 0) > 0)
+        .map(c => {
+          const id = Number(c.id);
+          const name = esc(c.name || ("#" + id));
+          const extra = c.faction ? (" · " + esc(c.faction)) : "";
+          return rowHtml(String(id), `<a class="link" data-pick-char="${esc(id)}">${name}${extra}</a>`);
+        });
+
+      showModal("Персонажи", rows.length ? rows : [row("–", "Нет")]);
+
+      const host = document.getElementById("modalRows");
+      if (!host) return;
+      host.querySelectorAll("[data-pick-char]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const v = el.getAttribute("data-pick-char");
+          if (!v || !/^\d+$/.test(v)) return;
+          saveCharacterId(Number(v));
+          hideModal();
+          currentPage = 0;
+          loadStashPage(0);
+        });
+      });
+    }
+
+    /* ═══════════════════════════════════════════
+       LOADING / NAVIGATION
+       ═══════════════════════════════════════════ */
+    async function loadStashPage(page){
+      const root = document.getElementById("root");
+      root.innerHTML = `<div class="card"><div class="loading">Загрузка</div></div>`;
+
+      const cid = loadSavedCharacterId();
+      const res = await apiMeStash(page, 15, cid);
+      if (!res.ok){
+        root.innerHTML = `<div class="card">
+          <div class="loading" style="padding:0;">Не найдено</div>
+          <div class="err">${esc(res.error || "Ошибка запроса")}</div>
+          <div style="margin-top:12px;display:flex;gap:10px;justify-content:center;">
+            <button class="btn" id="retryStash">Обновить</button>
+          </div>
+        </div>`;
+        const b = document.getElementById("retryStash");
+        if (b) b.addEventListener("click", () => loadStashPage(page));
+        return;
+      }
+
+      currentPage = Number(res.stash?.inventory?.page ?? page) || 0;
+      renderStash(res.stash);
+    }
+
+    async function loadById(id){
+      const root = document.getElementById("root");
+      root.innerHTML = `<div class="card"><div class="loading">Загрузка</div></div>`;
+
+      const r = await fetch(`/api/item?id=${encodeURIComponent(id)}`);
+      let j = null;
+      try{ j = await r.json(); }catch(e){}
+
+      if (!j || !j.ok){
+        root.innerHTML = `<div class="card">
+          <button class="backBtn" id="goBackErr">${ICONS.back} Назад к складу</button>
+          <div class="loading" style="padding:0;">Не найдено</div>
+          <div class="err">${esc(j?.error || "Ошибка запроса")}</div>
+        </div>`;
+        const btn = document.getElementById("goBackErr");
+        if (btn) btn.addEventListener("click", () => {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("id");
+          url.searchParams.delete("startapp");
+          url.searchParams.delete("tgWebAppStartParam");
+          history.pushState({}, "", url.toString());
+          if (stashData) renderStash(stashData);
+          else loadStashPage(currentPage || 0);
+        });
+        return;
+      }
+      renderItem(j.item);
+    }
+
+    function openItem(id){
+      const url = new URL(window.location.href);
+      url.searchParams.set("id", String(id));
+      url.searchParams.delete("startapp");
+      url.searchParams.delete("tgWebAppStartParam");
+      history.pushState({id: String(id)}, "", url.toString());
+      loadById(id);
+    }
+
+    function getStartItemId(){
+      const p = new URLSearchParams(window.location.search);
+      const id = p.get("id");
+      if (id && /^\d+$/.test(id)) return id;
+
+      const sp = p.get("tgWebAppStartParam") || p.get("startapp");
+      if (sp) {
+        const spv = String(sp).trim();
+        if (spv === "m" || spv.toLowerCase() === "market" || /^m\d+$/i.test(spv)) {
+          try { window.location.replace("/market" + window.location.search + window.location.hash); } catch (e) {}
+          return null;
+        }
+        if (/^i\d+$/i.test(spv)) return spv.slice(1);
+      }
+
+      return null;
+    }
+
+    /* ═══════════════════════════════════════════
+       INIT
+       ═══════════════════════════════════════════ */
+    try{
+      if (window.Telegram && Telegram.WebApp){
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        const tp = Telegram.WebApp.themeParams || {};
+        if (tp.bg_color) document.documentElement.style.setProperty("--bg", tp.bg_color);
+        if (tp.text_color) document.documentElement.style.setProperty("--text", tp.text_color);
+        if (tp.hint_color) document.documentElement.style.setProperty("--muted", tp.hint_color);
+        if (tp.button_color) document.documentElement.style.setProperty("--accent", tp.button_color);
+      }
+    }catch(e){}
+
+    /* Hide bottom nav when embedded in an iframe */
+    try {
+      if (window.self !== window.top) {
+        const nav = document.querySelector('.bottomNav');
+        if (nav) nav.style.display = 'none';
+        document.querySelector('.wrap').style.paddingBottom = '16px';
+      }
+    } catch(e) {}
+
+    const startId = getStartItemId();
+    if (startId) {
+      /* Load item detail from deep link */
+      try{
+        const url = new URL(window.location.href);
+        url.searchParams.set("id", String(startId));
+        url.searchParams.delete("startapp");
+        url.searchParams.delete("tgWebAppStartParam");
+        history.replaceState({id: String(startId)}, "", url.toString());
+      }catch(e){}
+      loadById(startId);
+    } else {
+      /* Load stash inventory view */
+      loadStashPage(0);
+    }
+
+    window.addEventListener("popstate", () => {
+      const id = getStartItemId();
+      if (id) {
+        loadById(id);
+      } else {
+        if (stashData) renderStash(stashData);
+        else loadStashPage(currentPage || 0);
+      }
+    });
+  </script>
 </body>
 </html>

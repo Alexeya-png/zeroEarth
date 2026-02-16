@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -15,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 FREE_START_COINS = 500
 PREMIUM_START_COINS = 1500
+
+LOG = logging.getLogger(__name__)
 
 
 def _esc(s: str) -> str:
@@ -246,7 +249,7 @@ class StartService:
                 creation_type=creation_type,
             )
         except Exception:
-            pass
+            LOG.debug("give_start_ammo failed", exc_info=True)
 
         await self._s.execute(
             text("UPDATE users SET balance = balance + :coins WHERE id = :uid"),

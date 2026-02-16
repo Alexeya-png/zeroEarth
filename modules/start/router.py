@@ -6,9 +6,10 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from modules.common.tg import safe_edit
+from modules.common.tg import safe_edit, safe_delete
 from modules.start.service import StartService, CreateCharacterError
 from modules.stash.service import StashService, StashError
 from modules.stash.keyboards import stash_kb
@@ -41,20 +42,51 @@ def _menu_text(first_name: str | None) -> str:
     return "Привет.\nВыбери раздел:"
 
 
+async def _menu_markup(db_session: AsyncSession, tg_id: int):
+    svc = StartService(db_session)
+    user = await svc.ensure_user(int(tg_id))
+
+    cid: int | None = None
+    try:
+        row = (
+            await db_session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM characters
+                    WHERE user_id = :uid
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"uid": int(getattr(user, "id", 0) or 0)},
+            )
+        ).mappings().first()
+        if row and row.get("id") is not None:
+            cid = int(row["id"])
+    except Exception:
+        cid = None
+
+    return main_menu_kb(webapp_character_id=cid)
+
+
 @router.message(CommandStart())
 async def start(message: Message, db_session: AsyncSession, state: FSMContext):
     await state.clear()
-    svc = StartService(db_session)
-    await svc.ensure_user(message.from_user.id)
-    await message.answer(_menu_text(message.from_user.first_name), reply_markup=main_menu_kb())
+    await message.answer(
+        _menu_text(message.from_user.first_name),
+        reply_markup=await _menu_markup(db_session, int(message.from_user.id)),
+    )
 
 
 @router.callback_query(F.data == "menu:back")
 async def menu_back(call: CallbackQuery, db_session: AsyncSession, state: FSMContext):
     await state.clear()
-    svc = StartService(db_session)
-    await svc.ensure_user(call.from_user.id)
-    await safe_edit(call, _menu_text(call.from_user.first_name), reply_markup=main_menu_kb())
+    await safe_edit(
+        call,
+        _menu_text(call.from_user.first_name),
+        reply_markup=await _menu_markup(db_session, int(call.from_user.id)),
+    )
     await call.answer()
 
 
@@ -169,10 +201,7 @@ async def menu_market(call: CallbackQuery, db_session: AsyncSession, state: FSMC
         market_page_item_ids=page_item_ids,
     )
 
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
+    await safe_delete(call.message)
 
     await call.answer()
 

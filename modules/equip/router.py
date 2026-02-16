@@ -502,7 +502,7 @@ async def _render_ammo_weapon(call: CallbackQuery, svc: EquipService, character_
 
     ammo_line = "не заряжено"
     if ammo_id is not None and qty > 0:
-        name = await _ammo_name(svc._s, int(ammo_id))
+        name = await _ammo_name(svc.session, int(ammo_id))
         ammo_line = f"{name} ×{qty}" if name else f"×{qty}"
 
     ammo_types = await svc.ammo_compatible_types(int(w["caliber_id"]))

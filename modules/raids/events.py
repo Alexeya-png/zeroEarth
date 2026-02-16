@@ -88,8 +88,8 @@ class RaidEvents:
             try:
                 if r.get("point_id") is not None:
                     point_ids.add(int(r["point_id"]))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                continue
 
             payload = _parse_payload(r.get("payload"))
 
@@ -271,8 +271,8 @@ class RaidEvents:
             try:
                 if enemy_id is not None:
                     enemy_name = ctx.char_names.get(int(enemy_id)) or enemy_name
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                enemy_name = enemy_name
             return f"Вступил в бой: {esc_html(enemy_name)}"
 
         if kind == "ammo_out":
@@ -289,10 +289,14 @@ class RaidEvents:
                 parts.append(f"вещи: {RaidEvents._fmt_items(found, ctx.item_names)}")
             if weapon_id is not None:
                 try:
-                    nm = ctx.item_names.get(int(weapon_id)) or f"weapon#{weapon_id}"
-                    parts.append(f"оружие: {esc_html(nm)}")
-                except Exception:
-                    pass
+                    wid = int(weapon_id)
+                except (TypeError, ValueError):
+                    wid = None
+                if wid is None:
+                    nm = f"weapon#{weapon_id}"
+                else:
+                    nm = ctx.item_names.get(wid) or f"weapon#{wid}"
+                parts.append(f"оружие: {esc_html(nm)}")
             if parts:
                 return "Обыскал противника – " + "; ".join(parts)
             return "Обыскал противника"

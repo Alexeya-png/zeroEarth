@@ -1,5 +1,3 @@
-# modules/raids/engine.py — заменить файл целиком
-
 from __future__ import annotations
 
 import asyncio
@@ -83,7 +81,7 @@ def _event_text(kind: str, payload: dict) -> str:
         if kind == "raid_dead":
             return "Рейд провален – персонаж погиб."
     except Exception:
-        pass
+        LOG.debug("format_event_text failed", exc_info=True)
     return ""
 
 
@@ -678,7 +676,7 @@ class RaidsEngine:
                     "hp": {"a": int(a_after.hp_current), "b": int(b_after.hp_current)},
                     "log": fight_lines[:25],
                     "notify": False,
-                }["outcome"] and "fight_finished",  # keep static type happy
+                }["outcome"] and "fight_finished",
                 {
                     "outcome": outcome,
                     "winner": winner_char_id,
@@ -868,6 +866,53 @@ class RaidsEngine:
                 duration_seconds = max(0, int((now - started_at).total_seconds()))
             except Exception:
                 duration_seconds = 0
+
+        # On death – equipped weapons must be lost, not returned to storage.
+        eq = await self.db.execute(
+            text(
+                """
+                SELECT weapon_1_id, weapon_2_id, weapon_3_id
+                FROM equipment
+                WHERE character_id = :cid
+                """
+            ),
+            {"cid": int(character_id)},
+        )
+        e = eq.mappings().first() or {}
+
+        weapon_ids: list[int] = []
+        for slot in (1, 2, 3):
+            wid = e.get(f"weapon_{slot}_id")
+            if wid is None:
+                continue
+            try:
+                weapon_ids.append(int(wid))
+            except Exception:
+                continue
+
+        if weapon_ids:
+            await self.db.execute(
+                text(
+                    """
+                    UPDATE equipment
+                    SET weapon_1_id = NULL,
+                        weapon_2_id = NULL,
+                        weapon_3_id = NULL
+                    WHERE character_id = :cid
+                    """
+                ),
+                {"cid": int(character_id)},
+            )
+            # If weapons are stored as items in inventory – remove them too.
+            await self.db.execute(
+                text(
+                    """
+                    DELETE FROM character_inventory
+                    WHERE character_id = :cid AND item_id = ANY(:ids)
+                    """
+                ),
+                {"cid": int(character_id), "ids": weapon_ids},
+            )
 
         inv = await self.db.execute(text("SELECT item_id, qty FROM raid_inventory WHERE raid_id = :r"), {"r": raid_id})
         lost_rows = inv.mappings().all()
@@ -1247,8 +1292,8 @@ class RaidsEngine:
                         "ammo_empty",
                         {"weapon_slot": int(slot), "weapon_name": weapon_names.get(wid), "notify": True},
                     )
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                LOG.debug("ammo qty parse failed", exc_info=True)
 
         return missing
 
@@ -1517,7 +1562,22 @@ class RaidsEngine:
 
             if slots:
                 slot, weapon_id = _RNG.choice(slots)
-                await self.db.execute(text(f"UPDATE equipment SET weapon_{slot}_id = NULL WHERE character_id = :cid"), {"cid": loser_char_id})
+
+                if slot == 1:
+                    await self.db.execute(
+                        text("UPDATE equipment SET weapon_1_id = NULL WHERE character_id = :cid"),
+                        {"cid": loser_char_id},
+                    )
+                elif slot == 2:
+                    await self.db.execute(
+                        text("UPDATE equipment SET weapon_2_id = NULL WHERE character_id = :cid"),
+                        {"cid": loser_char_id},
+                    )
+                else:
+                    await self.db.execute(
+                        text("UPDATE equipment SET weapon_3_id = NULL WHERE character_id = :cid"),
+                        {"cid": loser_char_id},
+                    )
                 await self.db.execute(
                     text(
                         """

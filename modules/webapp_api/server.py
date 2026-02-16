@@ -2,16 +2,81 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
 from typing import Any
 from urllib.parse import parse_qsl
+import sys
+from pathlib import Path
 
 from aiohttp import web
 from sqlalchemy import text
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+def _strip_quotes(v: str) -> str:
+    v = v.strip()
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        return v[1:-1]
+    return v
+
+
+def _load_env_file(path: Path) -> None:
+    try:
+        text_env = path.read_text(encoding="utf-8")
+    except Exception:
+        return
+
+    for raw in text_env.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+
+        if "=" not in line:
+            continue
+
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = _strip_quotes(v.strip())
+
+        if not k:
+            continue
+
+        if os.getenv(k) is None:
+            os.environ[k] = v
+
+
+def _load_dotenv() -> None:
+    env_file = (os.getenv("ENV_FILE") or "").strip()
+    if env_file:
+        _load_env_file(Path(env_file))
+        return
+
+    candidates = [
+        _PROJECT_ROOT / ".env",
+        _PROJECT_ROOT / ".env.local",
+        Path.cwd() / ".env",
+        Path.cwd() / ".env.local",
+    ]
+    for p in candidates:
+        if p.is_file():
+            _load_env_file(p)
+
+
+_load_dotenv()
+
+from modules.market.service import MarketError, MarketService
+from modules.start.service import StartService
 
 
 def _json_default(o: Any):
@@ -168,6 +233,72 @@ class StashWebModule:
         b = m.group(2)
         return f"{a}x{b}"
 
+    @staticmethod
+    def _bot_token() -> str:
+        return (
+            os.getenv("BOT_TOKEN")
+            or os.getenv("TG_BOT_TOKEN")
+            or os.getenv("TELEGRAM_BOT_TOKEN")
+            or ""
+        ).strip()
+
+    @classmethod
+    def _validate_init_data(cls, init_data: str) -> dict[str, Any] | None:
+        token = cls._bot_token()
+        if not token:
+            return None
+
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        got_hash = pairs.pop("hash", "")
+        if not got_hash:
+            return None
+
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", token.encode("utf-8"), hashlib.sha256).digest()
+        calc_hash = hmac.new(secret, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(calc_hash, got_hash):
+            return None
+
+        user_raw = pairs.get("user") or "{}"
+        try:
+            user = json.loads(user_raw)
+            if not isinstance(user, dict):
+                user = {}
+        except Exception:
+            user = {}
+
+        tg_id = 0
+        try:
+            tg_id = int(user.get("id") or 0)
+        except Exception:
+            tg_id = 0
+
+        if tg_id <= 0:
+            return None
+
+        return {"tg_id": tg_id, "user": user, "data": pairs}
+
+    @classmethod
+    def _tg_id_from_request(cls, request: web.Request) -> int | None:
+        init_data = (
+            request.headers.get("X-Tg-InitData")
+            or request.headers.get("X-Telegram-InitData")
+            or request.query.get("initData")
+            or request.query.get("init_data")
+            or ""
+        ).strip()
+
+        if not init_data:
+            return None
+
+        v = cls._validate_init_data(init_data)
+        if not v:
+            return None
+
+        tg_id = int(v.get("tg_id") or 0)
+        return tg_id if tg_id > 0 else None
+
     async def _resolve_caliber_by_code(self, session: AsyncSession, code: str) -> dict[str, Any] | None:
         c = self._norm_caliber(code)
         if not c:
@@ -219,6 +350,11 @@ class StashWebModule:
         # market api
         app.router.add_get("/api/market/listings", self.api_market_listings)
         app.router.add_get("/api/market/lot", self.api_market_lot)
+        app.router.add_post("/api/market/buy", self.api_market_buy)
+
+        # user api
+        app.router.add_get("/api/me/characters", self.api_me_characters)
+        app.router.add_get("/api/me/stash", self.api_me_stash)
 
         app.router.add_static("/", self._webapp_dir, show_index=False)
 
@@ -289,7 +425,7 @@ class StashWebModule:
         return None
 
     async def _fetch_ammo_stats_by_bullet(
-        self, session: 'AsyncSession', caliber_id: int, bullet_type: str
+        self, session: "AsyncSession", caliber_id: int, bullet_type: str
     ) -> dict | None:
         bt = self._norm_bullet_type(bullet_type)
         if not bt:
@@ -583,7 +719,15 @@ class StashWebModule:
                 acc = self._as_int(m.get("accuracy_bonus") or m.get("acc_bonus") or 0) or 0
                 rel = self._as_int(m.get("reliability_bonus") or m.get("rel_bonus") or 0) or 0
                 dmg = self._as_int(m.get("damage_bonus") or m.get("dmg_bonus") or 0) or 0
-                ap = self._as_int(m.get("armor_pen_bonus") or m.get("armor_penetration_bonus") or m.get("ap_bonus") or 0) or 0
+                ap = (
+                    self._as_int(
+                        m.get("armor_pen_bonus")
+                        or m.get("armor_penetration_bonus")
+                        or m.get("ap_bonus")
+                        or 0
+                    )
+                    or 0
+                )
 
             if not name:
                 name = f"Модуль {mid}" if mid else "Модуль"
@@ -711,7 +855,6 @@ class StashWebModule:
             "meta": row.get("item_meta") or {},
         }
 
-        # normalize meta to dict
         if not isinstance(out["meta"], dict):
             out["meta"] = self._as_dict(out["meta"])
 
@@ -938,6 +1081,402 @@ class StashWebModule:
 
         return web.json_response(
             {"ok": True, "lot": lot, "item": item},
+            dumps=lambda x: json.dumps(x, default=_json_default),
+        )
+
+    async def api_me_characters(self, request: web.Request) -> web.Response:
+        tg_id = self._tg_id_from_request(request)
+        if not tg_id:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        async with self._sm() as s:
+            chars = await StartService(s).list_characters(int(tg_id))
+
+        out: list[dict[str, Any]] = []
+        for c in chars or []:
+            out.append(
+                {
+                    "id": int(c.get("id") or 0),
+                    "name": str(c.get("name") or ""),
+                    "faction": str(c.get("faction") or ""),
+                    "is_alive": bool(c.get("is_alive")) if c.get("is_alive") is not None else True,
+                }
+            )
+
+        return web.json_response(
+            {"ok": True, "characters": out},
+            dumps=lambda x: json.dumps(x, default=_json_default),
+        )
+
+    async def api_me_stash(self, request: web.Request) -> web.Response:
+        tg_id = self._tg_id_from_request(request)
+        if not tg_id:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        page_raw = (request.query.get("page") or "0").strip()
+        page_size_raw = (request.query.get("page_size") or request.query.get("limit") or "15").strip()
+
+        character_id_raw = (
+            request.query.get("character_id")
+            or request.query.get("cid")
+            or request.query.get("character")
+            or ""
+        ).strip()
+
+        try:
+            page = int(page_raw)
+        except Exception:
+            page = 0
+
+        try:
+            page_size = int(page_size_raw)
+        except Exception:
+            page_size = 15
+
+        if page_size <= 0:
+            page_size = 15
+        if page_size > 50:
+            page_size = 50
+
+        character_id: int | None = None
+        if character_id_raw.isdigit():
+            character_id = int(character_id_raw)
+
+        async with self._sm() as s:
+            try:
+                user = await StartService(s).ensure_user(int(tg_id))
+            except Exception:
+                return web.json_response({"ok": False, "error": "internal"}, status=500)
+
+            if not character_id:
+                row = (
+                    await s.execute(
+                        text(
+                            """
+                            SELECT id
+                            FROM characters
+                            WHERE user_id = :uid
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT 1
+                            """
+                        ),
+                        {"uid": int(user.id)},
+                    )
+                ).mappings().first()
+
+                if row and row.get("id") is not None:
+                    try:
+                        character_id = int(row["id"])
+                    except Exception:
+                        character_id = None
+
+            if not character_id:
+                return web.json_response({"ok": False, "error": "no characters"}, status=404)
+
+            ch = (
+                await s.execute(
+                    text(
+                        """
+                        SELECT id, name
+                        FROM characters
+                        WHERE id = :cid AND user_id = :uid
+                        LIMIT 1
+                        """
+                    ),
+                    {"cid": int(character_id), "uid": int(user.id)},
+                )
+            ).mappings().first()
+
+            if not ch:
+                return web.json_response({"ok": False, "error": "character not found"}, status=404)
+
+            eq = (
+                await s.execute(
+                    text(
+                        """
+                        SELECT
+                          e.head_item_id, e.body_item_id, e.gloves_item_id, e.boots_item_id,
+                          e.weapon_1_id, e.weapon_2_id, e.weapon_3_id,
+
+                          ih.name AS head_name,
+                          COALESCE(ih.weight_kg, ih.weight, 0) AS head_weight,
+                          COALESCE(ih.loot_type, 'common') AS head_loot_type,
+                          COALESCE(ihs.tier, ih.quality_tier) AS head_tier,
+
+                          ib.name AS body_name,
+                          COALESCE(ib.weight_kg, ib.weight, 0) AS body_weight,
+                          COALESCE(ib.loot_type, 'common') AS body_loot_type,
+                          COALESCE(ibs.tier, ib.quality_tier) AS body_tier,
+
+                          ig.name AS gloves_name,
+                          COALESCE(ig.weight_kg, ig.weight, 0) AS gloves_weight,
+                          COALESCE(ig.loot_type, 'common') AS gloves_loot_type,
+                          COALESCE(igs.tier, ig.quality_tier) AS gloves_tier,
+
+                          it.name AS boots_name,
+                          COALESCE(it.weight_kg, it.weight, 0) AS boots_weight,
+                          COALESCE(it.loot_type, 'common') AS boots_loot_type,
+                          COALESCE(its.tier, it.quality_tier) AS boots_tier,
+
+                          w1.name AS w1_name,
+                          COALESCE(w1.weight_kg, w1.weight, 0) AS w1_weight,
+                          COALESCE(w1.loot_type, 'common') AS w1_loot_type,
+                          COALESCE(w1s.tier, w1.quality_tier) AS w1_tier,
+
+                          w2.name AS w2_name,
+                          COALESCE(w2.weight_kg, w2.weight, 0) AS w2_weight,
+                          COALESCE(w2.loot_type, 'common') AS w2_loot_type,
+                          COALESCE(w2s.tier, w2.quality_tier) AS w2_tier,
+
+                          w3.name AS w3_name,
+                          COALESCE(w3.weight_kg, w3.weight, 0) AS w3_weight,
+                          COALESCE(w3.loot_type, 'common') AS w3_loot_type,
+                          COALESCE(w3s.tier, w3.quality_tier) AS w3_tier
+                        FROM equipment e
+                        LEFT JOIN items ih ON ih.id = e.head_item_id
+                        LEFT JOIN item_equipment_stats ihs ON ihs.item_id = e.head_item_id
+
+                        LEFT JOIN items ib ON ib.id = e.body_item_id
+                        LEFT JOIN item_equipment_stats ibs ON ibs.item_id = e.body_item_id
+
+                        LEFT JOIN items ig ON ig.id = e.gloves_item_id
+                        LEFT JOIN item_equipment_stats igs ON igs.item_id = e.gloves_item_id
+
+                        LEFT JOIN items it ON it.id = e.boots_item_id
+                        LEFT JOIN item_equipment_stats its ON its.item_id = e.boots_item_id
+
+                        LEFT JOIN items w1 ON w1.id = e.weapon_1_id
+                        LEFT JOIN item_equipment_stats w1s ON w1s.item_id = e.weapon_1_id
+
+                        LEFT JOIN items w2 ON w2.id = e.weapon_2_id
+                        LEFT JOIN item_equipment_stats w2s ON w2s.item_id = e.weapon_2_id
+
+                        LEFT JOIN items w3 ON w3.id = e.weapon_3_id
+                        LEFT JOIN item_equipment_stats w3s ON w3s.item_id = e.weapon_3_id
+                        WHERE e.character_id = :cid
+                        """
+                    ),
+                    {"cid": int(character_id)},
+                )
+            ).mappings().first()
+
+            inv = (
+                await s.execute(
+                    text(
+                        """
+                        SELECT
+                          ci.item_id,
+                          i.name,
+                          COALESCE(i.weight_kg, i.weight, 0) AS weight_each,
+                          COALESCE(i.loot_type, 'common') AS loot_type,
+                          COALESCE(ies.tier, wm.tier, i.quality_tier) AS tier,
+                          ci.qty
+                        FROM character_inventory ci
+                        JOIN items i ON i.id = ci.item_id
+                        LEFT JOIN item_equipment_stats ies ON ies.item_id = ci.item_id
+                        LEFT JOIN weapon_mods wm ON wm.item_id = ci.item_id
+                        WHERE ci.character_id = :cid
+                        ORDER BY i.name
+                        """
+                    ),
+                    {"cid": int(character_id)},
+                )
+            ).mappings().all()
+
+            equipped_counts: dict[int, int] = {}
+            if eq:
+                for k in (
+                    "head_item_id",
+                    "body_item_id",
+                    "gloves_item_id",
+                    "boots_item_id",
+                    "weapon_1_id",
+                    "weapon_2_id",
+                    "weapon_3_id",
+                ):
+                    v = eq.get(k)
+                    if v:
+                        try:
+                            iid = int(v)
+                        except Exception:
+                            continue
+                        equipped_counts[iid] = equipped_counts.get(iid, 0) + 1
+
+            total_weight = 0.0
+            if eq:
+                for k in (
+                    "head_weight",
+                    "body_weight",
+                    "gloves_weight",
+                    "boots_weight",
+                    "w1_weight",
+                    "w2_weight",
+                    "w3_weight",
+                ):
+                    total_weight += self._as_float(eq.get(k)) or 0.0
+
+            armor: list[dict[str, Any]] = []
+            if eq:
+                for slot, id_k, n_k, w_k, lt_k, t_k in (
+                    ("head", "head_item_id", "head_name", "head_weight", "head_loot_type", "head_tier"),
+                    ("body", "body_item_id", "body_name", "body_weight", "body_loot_type", "body_tier"),
+                    ("gloves", "gloves_item_id", "gloves_name", "gloves_weight", "gloves_loot_type", "gloves_tier"),
+                    ("boots", "boots_item_id", "boots_name", "boots_weight", "boots_loot_type", "boots_tier"),
+                ):
+                    if not eq.get(id_k) or not eq.get(n_k):
+                        continue
+                    tier_v = str(eq.get(t_k) or "").strip()
+                    armor.append(
+                        {
+                            "item_id": int(eq[id_k]),
+                            "name": str(eq[n_k]),
+                            "weight": self._as_float(eq.get(w_k)) or 0.0,
+                            "tier": tier_v if tier_v else None,
+                            "rarity": str(eq.get(lt_k) or "common"),
+                            "slot": slot,
+                        }
+                    )
+
+            weapons: list[dict[str, Any]] = []
+            if eq:
+                for id_k, n_k, w_k, lt_k, t_k in (
+                    ("weapon_1_id", "w1_name", "w1_weight", "w1_loot_type", "w1_tier"),
+                    ("weapon_2_id", "w2_name", "w2_weight", "w2_loot_type", "w2_tier"),
+                    ("weapon_3_id", "w3_name", "w3_weight", "w3_loot_type", "w3_tier"),
+                ):
+                    if not eq.get(id_k) or not eq.get(n_k):
+                        continue
+                    tier_v = str(eq.get(t_k) or "").strip()
+                    weapons.append(
+                        {
+                            "item_id": int(eq[id_k]),
+                            "name": str(eq[n_k]),
+                            "weight": self._as_float(eq.get(w_k)) or 0.0,
+                            "tier": tier_v if tier_v else None,
+                            "rarity": str(eq.get(lt_k) or "common"),
+                            "slot": "weapon",
+                        }
+                    )
+
+            inv_items_all: list[dict[str, Any]] = []
+            if inv:
+                for row in inv:
+                    try:
+                        item_id = int(row.get("item_id") or 0)
+                    except Exception:
+                        continue
+
+                    if item_id <= 0:
+                        continue
+
+                    qty = self._as_int(row.get("qty")) or 1
+                    eq_qty = equipped_counts.get(item_id, 0)
+                    show_qty = qty - eq_qty
+                    if show_qty <= 0:
+                        continue
+
+                    weight_each = self._as_float(row.get("weight_each")) or 0.0
+                    w_total = float(show_qty) * float(weight_each)
+
+                    total_weight += w_total
+
+                    tier_v = str(row.get("tier") or "").strip()
+
+                    inv_items_all.append(
+                        {
+                            "item_id": int(item_id),
+                            "name": str(row.get("name") or ""),
+                            "qty": int(show_qty),
+                            "weight": float(w_total),
+                            "tier": tier_v if tier_v else None,
+                            "rarity": str(row.get("loot_type") or "common"),
+                        }
+                    )
+
+            total_items = len(inv_items_all)
+            total_pages = int((total_items + page_size - 1) // page_size) if total_items > 0 else 1
+
+            if page < 0:
+                page = 0
+            if page >= total_pages:
+                page = total_pages - 1
+
+            start_i = page * page_size
+            end_i = min(start_i + page_size, total_items)
+            inv_page_items = inv_items_all[start_i:end_i]
+
+            stash = {
+                "character": {"id": int(ch["id"]), "name": str(ch.get("name") or "")},
+                "total_weight": float(total_weight),
+                "equipment": {"armor": armor, "weapons": weapons},
+                "inventory": {
+                    "page": int(page),
+                    "total_pages": int(total_pages),
+                    "total_items": int(total_items),
+                    "page_size": int(page_size),
+                    "items": inv_page_items,
+                },
+            }
+
+        return web.json_response(
+            {"ok": True, "stash": stash},
+            dumps=lambda x: json.dumps(x, default=_json_default),
+        )
+
+    async def api_market_buy(self, request: web.Request) -> web.Response:
+        tg_id = self._tg_id_from_request(request)
+        if not tg_id:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "bad json"}, status=400)
+
+        lot_id = payload.get("lot_id")
+        qty = payload.get("qty")
+        character_id = payload.get("character_id")
+
+        try:
+            lot_id = int(lot_id)
+            character_id = int(character_id)
+            qty = int(qty) if qty is not None else None
+        except Exception:
+            return web.json_response({"ok": False, "error": "bad params"}, status=400)
+
+        if lot_id <= 0 or character_id <= 0:
+            return web.json_response({"ok": False, "error": "bad params"}, status=400)
+
+        async with self._sm() as s:
+            svc = MarketService(s)
+            try:
+                res = await svc.buy_listing_to_character(
+                    tg_id=int(tg_id),
+                    character_id=int(character_id),
+                    listing_id=int(lot_id),
+                    qty=qty,
+                )
+            except MarketError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+            except Exception:
+                return web.json_response({"ok": False, "error": "internal"}, status=500)
+
+        return web.json_response(
+            {
+                "ok": True,
+                "purchase": {
+                    "listing_id": int(getattr(res, "listing_id", 0) or 0),
+                    "item_id": int(getattr(res, "item_id", 0) or 0),
+                    "item_name": str(getattr(res, "item_name", "") or ""),
+                    "qty": int(getattr(res, "qty", 0) or 0),
+                    "price": int(getattr(res, "price", 0) or 0),
+                    "fee": int(getattr(res, "fee", 0) or 0),
+                    "seller_user_id": int(getattr(res, "seller_user_id", 0) or 0),
+                },
+            },
             dumps=lambda x: json.dumps(x, default=_json_default),
         )
 

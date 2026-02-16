@@ -46,6 +46,21 @@ def _link_name(item_id: Any, escaped_name: str) -> str:
     return f'<a href="{href}">{escaped_name}</a>'
 
 
+def _market_link_name(item_id: Any, escaped_name: str) -> str:
+    """Link to Market miniapp item view."""
+    if item_id is None:
+        return escaped_name
+    try:
+        iid = int(item_id)
+    except Exception:
+        return escaped_name
+    if iid <= 0:
+        return escaped_name
+
+    href = _miniapp_href(f"m{iid}")
+    return f'<a href="{href}">{escaped_name}</a>'
+
+
 def _esc(s: str) -> str:
     return (
         s.replace("&", "&amp;")
@@ -284,8 +299,48 @@ class MarketService:
         self._username_col_checked = False
         self._username_col: str | None = None
 
-        self._weapons_cols_checked = False
-        self._weapons_cols: set[str] = set()
+
+    @property
+    def session(self) -> AsyncSession:
+        return self._s
+
+    async def ensure_user_id(self, tg_id: int) -> int:
+        return await self._ensure_user_id(tg_id)
+
+    async def get_listing(self, listing_id: int) -> Optional["MarketListingDetails"]:
+        return await self._get_listing(listing_id)
+
+    def _dialect_name(self) -> str:
+        try:
+            bind = self._s.get_bind()
+            return str(getattr(getattr(bind, "dialect", None), "name", "") or "")
+        except Exception:
+            return ""
+
+    async def _table_columns(self, table_name: str) -> set[str]:
+        t = str(table_name or "").strip().lower()
+        if t not in {"users", "weapons"}:
+            return set()
+
+        dialect = self._dialect_name()
+        try:
+            if dialect == "sqlite":
+                r = (await self._s.execute(text(f"PRAGMA table_info({t})"))).mappings().all()
+                return {str(x.get("name") or "").strip() for x in (r or []) if str(x.get("name") or "").strip()}
+
+            r = (
+                await self._s.execute(
+                    text(
+                        "SELECT column_name "
+                        "FROM information_schema.columns "
+                        "WHERE table_name = :t"
+                    ),
+                    {"t": t},
+                )
+            ).mappings().all()
+            return {str(x.get("column_name") or "").strip() for x in (r or []) if str(x.get("column_name") or "").strip()}
+        except Exception:
+            return set()
 
     async def _ensure_user_id(self, tg_id: int) -> int:
         row = (
@@ -334,21 +389,7 @@ class MarketService:
         self._username_col = None
 
         candidates = ["username", "tg_username", "telegram_username"]
-        r = (
-            await self._s.execute(
-                text(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = 'users'
-                      AND column_name = ANY(:cols)
-                    """
-                ),
-                {"cols": candidates},
-            )
-        ).mappings().all()
-
-        existing = {str(x.get("column_name") or "").strip() for x in (r or []) if str(x.get("column_name") or "").strip()}
+        existing = await self._table_columns("users")
         for c in candidates:
             if c in existing:
                 self._username_col = c
@@ -379,27 +420,6 @@ class MarketService:
             return s
         return "@" + s
 
-    async def _ensure_weapons_cols(self) -> set[str]:
-        if self._weapons_cols_checked:
-            return set(self._weapons_cols)
-
-        self._weapons_cols_checked = True
-        self._weapons_cols = set()
-
-        cols = (
-            await self._s.execute(
-                text(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = 'weapons'
-                    """
-                )
-            )
-        ).mappings().all()
-
-        self._weapons_cols = {str(x.get("column_name") or "").strip() for x in (cols or []) if str(x.get("column_name") or "").strip()}
-        return set(self._weapons_cols)
 
     async def _weapon_name_by_unique_id(self, unique_id: int) -> str:
         uid = int(unique_id or 0)
@@ -414,28 +434,6 @@ class MarketService:
         ).mappings().first()
         if r and str(r.get("name") or "").strip():
             return str(r.get("name") or "").strip()
-
-        cols = await self._ensure_weapons_cols()
-
-        if "legacy_id" in cols:
-            r = (
-                await self._s.execute(
-                    text("SELECT name FROM weapons WHERE legacy_id = :id LIMIT 1"),
-                    {"id": uid},
-                )
-            ).mappings().first()
-            if r and str(r.get("name") or "").strip():
-                return str(r.get("name") or "").strip()
-
-        if "weapon_legacy_id" in cols:
-            r = (
-                await self._s.execute(
-                    text("SELECT name FROM weapons WHERE weapon_legacy_id = :id LIMIT 1"),
-                    {"id": uid},
-                )
-            ).mappings().first()
-            if r and str(r.get("name") or "").strip():
-                return str(r.get("name") or "").strip()
 
         return ""
 
@@ -719,7 +717,7 @@ class MarketService:
             price_label = self._price_range_label(int(it.price_min or 0), int(it.price_max or 0))
 
             name = _esc(str(it.item_name or "Предмет"))
-            name = _link_name(item_id, name)
+            name = _market_link_name(item_id, name)
 
             item_type_raw = str(it.item_type or "misc").strip()
             is_misc = item_type_raw.lower() == "misc"
@@ -966,7 +964,7 @@ class MarketService:
         price_label = self._price_range_label(int(agg.get("price_min") or 0), int(agg.get("price_max") or 0))
 
         item_title = _esc(str(mp.item_name or "Предмет"))
-        item_title = _link_name(int(mp.item_id), item_title)
+        item_title = _market_link_name(int(mp.item_id), item_title)
 
         lines: list[str] = []
         lines.append(f"<b>Рынок – {item_title}</b>")

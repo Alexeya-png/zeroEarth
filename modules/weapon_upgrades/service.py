@@ -162,16 +162,25 @@ class WeaponUpgradeService:
     async def get_weapon_id_in_slot(self, character_id: int, slot: int) -> Optional[int]:
         if slot not in (1, 2, 3):
             return None
-        key = f"weapon_{slot}_id"
+
         r = (
             await self.session.execute(
-                text(f"SELECT {key} FROM equipment WHERE character_id = :cid"),
+                text(
+                    """
+                    SELECT weapon_1_id, weapon_2_id, weapon_3_id
+                    FROM equipment
+                    WHERE character_id = :cid
+                    """
+                ),
                 {"cid": character_id},
             )
         ).mappings().first()
-        if not r or not r.get(key):
+        if not r:
             return None
-        return int(r[key])
+
+        key = f"weapon_{slot}_id"
+        wid = r.get(key)
+        return int(wid) if wid else None
 
     async def get_equipped_weapons(self, character_id: int) -> dict[int, WeaponRow]:
         r = (
@@ -552,18 +561,28 @@ class WeaponUpgradeService:
 
         await self._ensure_not_in_active_raid(character_id)
 
-        key = f"weapon_{slot}_id"
         eq = (
             await self.session.execute(
-                text(f"SELECT {key} FROM equipment WHERE character_id = :cid"),
+                text(
+                    """
+                    SELECT weapon_1_id, weapon_2_id, weapon_3_id
+                    FROM equipment
+                    WHERE character_id = :cid
+                    """
+                ),
                 {"cid": character_id},
             )
         ).mappings().first()
 
-        if not eq or not eq.get(key):
+        if not eq:
+            raise ValueError("Экипировка не найдена")
+
+        key = f"weapon_{slot}_id"
+        wid = eq.get(key)
+        if not wid:
             raise ValueError("В этом слоте нет оружия")
 
-        current_weapon_id = int(eq[key])
+        current_weapon_id = int(wid)
         if current_weapon_id != expected_weapon_id:
             raise ValueError("Оружие в слоте изменилось. Открой улучшение заново")
 
@@ -699,10 +718,21 @@ class WeaponUpgradeService:
             },
         )
 
-        await self.session.execute(
-            text(f"UPDATE equipment SET {key} = :wid WHERE character_id = :cid"),
-            {"wid": new_weapon_id, "cid": character_id},
-        )
+        if slot == 1:
+            await self.session.execute(
+                text("UPDATE equipment SET weapon_1_id = :wid WHERE character_id = :cid"),
+                {"wid": new_weapon_id, "cid": character_id},
+            )
+        elif slot == 2:
+            await self.session.execute(
+                text("UPDATE equipment SET weapon_2_id = :wid WHERE character_id = :cid"),
+                {"wid": new_weapon_id, "cid": character_id},
+            )
+        else:
+            await self.session.execute(
+                text("UPDATE equipment SET weapon_3_id = :wid WHERE character_id = :cid"),
+                {"wid": new_weapon_id, "cid": character_id},
+            )
 
         qty_after_current = await self._get_inventory_qty(character_id, current_weapon_id)
         target_current = max(qty_before_current - 1, 0)

@@ -1,15 +1,71 @@
 from __future__ import annotations
 
+import os
 from typing import Iterable, Mapping, Any
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, quote
 
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+def _miniapp_href(start_param: str | None = None) -> str:
+    bot_username = (os.getenv("TG_BOT_USERNAME") or "").lstrip("@")
+    webapp_name = (os.getenv("TG_WEBAPP_NAME") or "").strip().lstrip("/")
+
+    if not bot_username:
+        bot_username = "zeroearth_bot"
+
+    # Для кнопки в меню используем main mini app.
+    # TG_WEBAPP_NAME оставляем для совместимости, но не используем, чтобы не ловить "веб-приложение не найдено".
+    _ = webapp_name
+    base = f"https://t.me/{bot_username}"
+
+    sp = (start_param or "").strip() or "stash"
+    return f"{base}?startapp={quote(sp)}"
+
+
+def _webapp_public_url(webapp_character_id: int | None = None) -> str | None:
+    base = (
+        os.getenv("WEBAPP_PUBLIC_URL")
+        or os.getenv("WEBAPP_URL")
+        or os.getenv("TG_WEBAPP_URL")
+        or ""
+    ).strip()
+    if not base:
+        return None
+
+    if not (base.startswith("https://") or base.startswith("http://")):
+        base = "https://" + base
+
+    p = urlsplit(base)
+    path = p.path or "/"
+    q = dict(parse_qsl(p.query, keep_blank_values=True))
+
+    if webapp_character_id is not None:
+        try:
+            cid = int(webapp_character_id)
+        except Exception:
+            cid = 0
+        if cid > 0:
+            q["cid"] = str(cid)
+
+    return urlunsplit((p.scheme, p.netloc, path, urlencode(q), p.fragment))
+
+
+def main_menu_kb(webapp_character_id: int | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="Персонаж", callback_data="menu:char")
     kb.button(text="Склад", callback_data="menu:stash")
+    start_param = ""
+    if webapp_character_id is not None:
+        try:
+            cid = int(webapp_character_id)
+        except Exception:
+            cid = 0
+        if cid > 0:
+            start_param = f"c{cid}"
+
+    kb.button(text="Веб приложение", url=_miniapp_href(start_param))
     kb.button(text="Рынок", callback_data="menu:market")
     kb.button(text="Рейды", callback_data="menu:raids")
     kb.button(text="Квесты", callback_data="menu:quests")

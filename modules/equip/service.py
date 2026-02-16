@@ -58,6 +58,13 @@ class EquipService:
     def __init__(self, session: AsyncSession):
         self._s = session
 
+    @property
+    def session(self) -> AsyncSession:
+        return self._s
+
+    async def ensure_user_id(self, tg_id: int) -> int:
+        return await self._ensure_user_id(tg_id)
+
     async def _ensure_user_id(self, tg_id: int) -> int:
         row = (
             await self._s.execute(

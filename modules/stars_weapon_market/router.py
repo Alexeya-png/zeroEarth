@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
@@ -20,6 +21,8 @@ from modules.stars_weapon_market.keyboards import (
 from modules.stars_weapon_market.service import StarsWeaponMarketService, StarsWeaponMarketError
 from modules.stars_weapon_market.states import StarsWeaponMarketStates
 
+
+LOG = logging.getLogger(__name__)
 
 router = Router()
 
@@ -167,10 +170,10 @@ async def wstars_pick_listing(message: Message, db_session: AsyncSession, state:
                 reply_markup=kb,
             )
             return
-        except TelegramBadRequest:
-            pass
+        except TelegramBadRequest as e:
+            LOG.debug("telegram bad request", exc_info=True)
         except Exception:
-            pass
+            LOG.debug("edit failed", exc_info=True)
 
     await message.answer(text_out, reply_markup=kb)
 
@@ -282,7 +285,7 @@ async def wstars_sell_choose_weapon(message: Message, db_session: AsyncSession, 
         except TelegramBadRequest:
             pass
         except Exception:
-            pass
+            LOG.debug("delete failed", exc_info=True)
 
     weapon_id = int(weapon_ids[n - 1])
     await state.update_data(weapon_id=weapon_id)
@@ -357,7 +360,7 @@ async def wstars_withdraw_choose_listing(message: Message, db_session: AsyncSess
         except TelegramBadRequest:
             pass
         except Exception:
-            pass
+            LOG.debug("unexpected error", exc_info=True)
 
     listing_id = int(ids_[n - 1])
 

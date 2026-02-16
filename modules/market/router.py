@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from html import escape as html_escape
 
 from aiogram import Router, F
@@ -11,7 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from modules.common.tg import safe_edit
+from modules.common.tg import safe_edit, safe_delete
 from modules.start.keyboards import chars_pick_kb
 from modules.start.service import StartService
 
@@ -28,6 +29,8 @@ from .keyboards import (
 from .service import MarketService, MarketError
 from .states import MarketStates
 
+
+LOG = logging.getLogger(__name__)
 
 router = Router()
 
@@ -72,7 +75,7 @@ async def _render_market(call: CallbackQuery, db_session: AsyncSession, state: F
     svc = MarketService(db_session)
     base, mp = await svc.market_items_text(page=int(page), page_size=PAGE_SIZE, exclude_user_id=int(user.id))
 
-    hint = "\n\nПодсказка: напиши № товара 1–30, чтобы увидеть лоты.\nПример: <code>12</code>"
+    hint = "\n\nПодсказка: нажми на название предмета, чтобы открыть лоты в веб-приложении."
     text_out = base + hint
     if notice:
         text_out = base + "\n" + notice + hint
@@ -119,7 +122,7 @@ async def _render_market_from_message(
     svc = MarketService(db_session)
     base, mp = await svc.market_items_text(page=int(page), page_size=PAGE_SIZE, exclude_user_id=int(user.id))
 
-    hint = "\n\nПодсказка: напиши № товара 1–30, чтобы увидеть лоты.\nПример: <code>12</code>"
+    hint = "\n\nПодсказка: нажми на название предмета, чтобы открыть лоты в веб-приложении."
     text_out = base + hint
     if notice:
         text_out = base + "\n" + notice + hint
@@ -260,17 +263,14 @@ async def _render_market_item_lots_from_message(
 async def _delete_later(msg: Message, delay: float = 4.0) -> None:
     async def _task() -> None:
         await asyncio.sleep(delay)
-        try:
-            await msg.delete()
-        except Exception:
-            pass
+        await safe_delete(msg)
 
     asyncio.create_task(_task())
 
 
 async def _sell_total_count(svc: MarketService, character_id: int) -> int:
     r = (
-        await svc._s.execute(
+        await svc.session.execute(
             text(
                 """
                 SELECT COUNT(*) AS cnt
@@ -336,7 +336,7 @@ async def market_details_show(call: CallbackQuery, db_session: AsyncSession, sta
     page = int(parts[4] or 0)
 
     svc = MarketService(db_session)
-    l = await svc._get_listing(listing_id)
+    l = await svc.get_listing(listing_id)
     if not l:
         await safe_edit(call, "<b>Рынок – подробнее</b>\n\nЛот не найден.", reply_markup=market_details_kb(page=page))
         await call.answer()
@@ -371,10 +371,7 @@ async def market_details_from_chat(message: Message, db_session: AsyncSession, s
     raw = (message.text or "").strip()
 
     if raw == "0":
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await safe_delete(message)
 
         if view == "details":
             item_id = int(data.get("market_item_id") or 0)
@@ -406,10 +403,7 @@ async def market_details_from_chat(message: Message, db_session: AsyncSession, s
         return
 
     if not raw.isdigit():
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await safe_delete(message)
         m = await message.answer("Нужен номер строки из таблицы.")
         await _delete_later(m, 4.0)
         return
@@ -419,20 +413,14 @@ async def market_details_from_chat(message: Message, db_session: AsyncSession, s
     if view == "items":
         item_ids = list(data.get("market_page_item_ids") or [])
         if n < 1 or n > len(item_ids):
-            try:
-                await message.delete()
-            except Exception:
-                pass
+            await safe_delete(message)
             m = await message.answer("Нет такого номера.")
             await _delete_later(m, 4.0)
             return
 
         item_id = int(item_ids[n - 1])
 
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await safe_delete(message)
 
         if message_id > 0:
             await _render_market_item_lots_from_message(
@@ -452,23 +440,17 @@ async def market_details_from_chat(message: Message, db_session: AsyncSession, s
 
     listing_ids = list(data.get("market_item_page_listing_ids") or [])
     if n < 1 or n > len(listing_ids):
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await safe_delete(message)
         m = await message.answer("Нет такого номера.")
         await _delete_later(m, 4.0)
         return
 
     listing_id = int(listing_ids[n - 1])
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await safe_delete(message)
 
     svc = MarketService(db_session)
-    l = await svc._get_listing(listing_id)
+    l = await svc.get_listing(listing_id)
     if not l:
         m = await message.answer("Лот не найден.")
         await _delete_later(m, 4.0)
@@ -519,7 +501,7 @@ async def market_details_buy_confirm(call: CallbackQuery, db_session: AsyncSessi
     balance = int(getattr(user, "balance", 0) or 0)
 
     svc = MarketService(db_session)
-    l = await svc._get_listing(listing_id)
+    l = await svc.get_listing(listing_id)
     if not l:
         await safe_edit(call, "Лот не найден.", reply_markup=market_details_kb(page=page))
         await call.answer()
@@ -570,7 +552,7 @@ async def market_noop(call: CallbackQuery):
 
 async def _render_buy_qty(call: CallbackQuery, db_session: AsyncSession, state: FSMContext, *, listing_id: int, page: int, qty: int | None = None) -> None:
     svc = MarketService(db_session)
-    l = await svc._get_listing(int(listing_id))
+    l = await svc.get_listing(int(listing_id))
     if not l:
         await safe_edit(call, "Лот не найден.", reply_markup=market_details_kb(page=int(page)))
         return
@@ -638,7 +620,7 @@ async def market_buyqty_inc(call: CallbackQuery, db_session: AsyncSession, state
     page = int(parts[4] or 0)
 
     svc = MarketService(db_session)
-    l = await svc._get_listing(int(listing_id))
+    l = await svc.get_listing(int(listing_id))
     if not l:
         await safe_edit(call, "Лот не найден.", reply_markup=market_details_kb(page=page))
         await call.answer()
@@ -662,7 +644,7 @@ async def market_buyqty_max(call: CallbackQuery, db_session: AsyncSession, state
     page = int(parts[4] or 0)
 
     svc = MarketService(db_session)
-    l = await svc._get_listing(int(listing_id))
+    l = await svc.get_listing(int(listing_id))
     if not l:
         await safe_edit(call, "Лот не найден.", reply_markup=market_details_kb(page=page))
         await call.answer()
@@ -1095,9 +1077,9 @@ async def _withdraw_show_listings(
     svc = MarketService(db_session)
     page = max(0, int(page))
 
-    uid = await svc._ensure_user_id(call.from_user.id)
+    uid = await svc.ensure_user_id(call.from_user.id)
     total_row = (
-        await svc._s.execute(
+        await svc.session.execute(
             text(
                 """
                 SELECT count(*)
@@ -1163,10 +1145,7 @@ async def market_withdraw_choose_listing(message: Message, db_session: AsyncSess
 
     listing_id = int(listing_ids[n - 1])
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await safe_delete(message)
 
     svc = MarketService(db_session)
     try:
@@ -1220,10 +1199,7 @@ async def market_sell_choose_item(message: Message, db_session: AsyncSession, st
     max_qty = int(item.get("qty") or 1)
     name = str(item.get("name") or "Предмет")
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await safe_delete(message)
 
     if max_qty > 1:
         text_out = (
@@ -1247,7 +1223,7 @@ async def market_sell_choose_item(message: Message, db_session: AsyncSession, st
                 await _edit_message(message.bot, chat_id, message_id, text_out, market_sell_cancel_kb())
                 return
             except Exception:
-                pass
+                LOG.debug("edit_message failed", exc_info=True)
         await message.answer(text_out, reply_markup=market_sell_cancel_kb(), parse_mode="HTML")
         return
 
@@ -1272,7 +1248,7 @@ async def market_sell_choose_item(message: Message, db_session: AsyncSession, st
             await _edit_message(message.bot, chat_id, message_id, text_out, market_sell_cancel_kb())
             return
         except Exception:
-            pass
+            LOG.debug("edit_message failed", exc_info=True)
     await message.answer(text_out, reply_markup=market_sell_cancel_kb(), parse_mode="HTML")
 
 
@@ -1294,10 +1270,7 @@ async def market_sell_choose_qty(message: Message, db_session: AsyncSession, sta
         await message.answer(f"Количество должно быть 1–{max_qty}.")
         return
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await safe_delete(message)
 
     text_out = (
         "<b>Выставить на рынок</b>\n"
@@ -1314,7 +1287,7 @@ async def market_sell_choose_qty(message: Message, db_session: AsyncSession, sta
             await _edit_message(message.bot, chat_id, message_id, text_out, market_sell_cancel_kb())
             return
         except Exception:
-            pass
+            LOG.debug("edit_message failed", exc_info=True)
     await message.answer(text_out, reply_markup=market_sell_cancel_kb(), parse_mode="HTML")
 
 
@@ -1339,10 +1312,7 @@ async def market_sell_choose_price(message: Message, db_session: AsyncSession, s
         await message.answer("Цена должна быть 0 или больше.")
         return
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await safe_delete(message)
 
     svc = MarketService(db_session)
     try:

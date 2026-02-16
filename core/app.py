@@ -70,7 +70,7 @@ async def run() -> None:
         bal = await bot.get_my_star_balance()
         print(bal)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("stars balance init failed", exc_info=True)
 
     try:
         await dp.start_polling(

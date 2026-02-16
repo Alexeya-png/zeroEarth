@@ -816,7 +816,7 @@ class App(tk.Tk):
         try:
             self.bg_menu.configure(state=state)
         except Exception:
-            pass
+            LOG.debug("bg_menu state update failed", exc_info=True)
         self.schedule_preview()
 
     def pick_files(self) -> None:
@@ -875,7 +875,7 @@ class App(tk.Tk):
             try:
                 self.after_cancel(self._preview_job)
             except Exception:
-                pass
+                LOG.debug("after_cancel failed", exc_info=True)
         self._preview_job = self.after(140, self.update_preview)
 
     def update_preview(self) -> None:

@@ -229,7 +229,7 @@ def create_set_with_first_batch(
             try:
                 f.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("file close failed", exc_info=True)
 
 
 def add_one_sticker(
@@ -255,7 +255,7 @@ def add_one_sticker(
             try:
                 f.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("file close failed", exc_info=True)
 
 
 def export_mapping(

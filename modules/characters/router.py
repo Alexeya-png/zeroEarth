@@ -23,7 +23,7 @@ from core.mechanics.clash import (
     geometric_mean_pct,
     simulate_clash_round,
 )
-from modules.common.tg import safe_edit
+from modules.common.tg import safe_edit, safe_delete
 from modules.start.keyboards import (
     my_chars_kb,
     chars_pick_kb,
@@ -71,11 +71,7 @@ async def _show(call: CallbackQuery, text_out: str, reply_markup):
     if msg and msg.text is not None:
         await safe_edit(call, text_out, reply_markup=reply_markup)
         return
-    try:
-        if msg:
-            await msg.delete()
-    except Exception:
-        pass
+    await safe_delete(msg)
     if msg:
         await msg.answer(text_out, reply_markup=reply_markup, parse_mode="HTML", disable_web_page_preview=True)
 

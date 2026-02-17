@@ -104,6 +104,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  document.getElementById("title").textContent = "Ошибка";
+  document.getElementById("title").фtextContent = "Ошибка";
   document.getElementById("details").textContent = String(e);
 });
